@@ -64,11 +64,7 @@ if [ -x "$CB" ]; then
 else
   no "claude CLI not found at $CB -- set CLAUDE_BIN in .env"
 fi
-echo "        panes: ${PANE_A:-claude:sonnet} | ${PANE_B:-claude:opus}"
-case "${PANE_A:-}${PANE_B:-}" in
-  *gemini*) [ -n "${GEMINI_API_KEY:-}" ] && ok "GEMINI_API_KEY set (a pane uses Gemini)" \
-              || no "a pane is set to gemini but GEMINI_API_KEY is missing" ;;
-esac
+echo "        model: ${CLAUDE_MODEL:-sonnet}"
 
 echo
 echo "Live check"

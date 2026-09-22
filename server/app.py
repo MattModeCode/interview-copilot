@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from . import config
 from .capture import Capture
-from .models import answer, pane_label, pane_specs, pool_status, start_pools, stop_pools
+from .models import answer, pool_status, start_pools, stop_pools
 from .transcript import Transcript
 
 UI = Path(__file__).resolve().parent.parent / "ui"
@@ -153,8 +153,8 @@ async def health() -> JSONResponse:
             "capturing": capture.running,
             "capture_error": capture.error,
             "segments": len(transcript.all_segments()),
-            "panes": {p: pane_label(spec) for p, spec in pane_specs()},
-            "pools": pool_status(),
+            "model": config.CLAUDE_MODEL,
+            "pool": pool_status(),
             "window_seconds": config.WINDOW_SECONDS,
             "audio_device": config.AUDIO_DEVICE,
         }
@@ -180,7 +180,7 @@ async def ws(websocket: WebSocket) -> None:
                 "config": {
                     "window": config.WINDOW_SECONDS,
                     "chunk": config.CHUNK_SECONDS,
-                    "panes": {p: pane_label(spec) for p, spec in pane_specs()},
+                    "model": config.CLAUDE_MODEL,
                     "recycle_after": config.RECYCLE_AFTER,
                 },
             }
@@ -213,7 +213,9 @@ async def ws(websocket: WebSocket) -> None:
                     json.dumps({"type": "pong", "error": capture.error,
                                 "capturing": capture.running})
                 )
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, RuntimeError):
+        # RuntimeError covers an unclean close (tab killed, network drop)
+        # where starlette raises instead of a clean WebSocketDisconnect.
         pass
     finally:
         clients.discard(websocket)

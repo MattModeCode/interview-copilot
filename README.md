@@ -2,12 +2,18 @@
 
 Live assistant for a **disclosed, open-book** technical interview. It listens to
 the call's incoming audio, keeps a rolling transcript, and on one keypress asks
-two models — in parallel — to find the most recent real question in the last 90
-seconds and answer it in a form you can read out loud.
+Sonnet to find the most recent real question in the last 90 seconds and answer
+it in a form you can read out loud.
 
-**No API keys.** Both panes drive the `claude` CLI headlessly using your existing
-subscription login. Sonnet answers fast, Opus answers deeper; where they disagree,
-the question is contested and worth hedging on out loud.
+**No API key.** Drives the `claude` CLI headlessly using your existing
+subscription login.
+
+A second pane was tried and dropped. Gemini CLI's free OAuth tier for
+individuals is discontinued by Google. The Antigravity CLI was checked too —
+every headless flag (`-p`, `--print`, `--prompt`, `--headless`, `--cli`)
+returns silently; the binary is a thin launcher for the IDE app (`#!/usr/bin/env
+node \ require('../')`), not an agent with a CLI mode. Both would need a
+workaround, which wasn't wanted, so this is Sonnet alone.
 
 It does not crop audio or try to detect question boundaries in the signal. The
 whole transcript window goes to the model and the model does the filtering.
@@ -31,8 +37,7 @@ Teams (or any call)
                                                     └─ whisper-server (large-v3-turbo, warm)
                                                          └─ rolling transcript
                                                               └─ [⌃⇧Space]
-                                                                   ├─ claude CLI (sonnet) ─┐
-                                                                   └─ claude CLI (opus)   ─┴─ two panes
+                                                                        └─ claude CLI (sonnet)
 ```
 
 Only the **remote** side of the call reaches BlackHole — your own microphone
@@ -103,7 +108,6 @@ Measured on this machine, consecutive turns on a live session:
 | Speech → transcript | ~3s chunk + 0.3s transcription |
 | Boot + warmup, per model | ~2.4s, paid **once** |
 | Sonnet → first token | **630–970ms** |
-| Opus → first token | **1090–1370ms** |
 | Either → complete answer | 3–5s (you read the LEAD as it streams) |
 
 Latency stays flat as the session accumulates turns — the prompt cache is warm
@@ -118,12 +122,11 @@ if you are careless** — it did during development, mid-benchmark:
 You've hit your session limit · resets 1:50pm
 ```
 
-Both panes are the same account, so a limit takes out the whole tool at once.
 What the design does about it:
 
-- One persistent session per model, not a process per answer. An earlier
-  version spawned a fresh process per trigger and paid an extra warmup round
-  trip every time — roughly double the quota for worse latency.
+- One persistent session, not a process per answer. An earlier version
+  spawned a fresh process per trigger and paid an extra warmup round trip
+  every time — roughly double the quota for worse latency.
 - `RECYCLE_AFTER` (default 8) is the only other thing that costs a spare turn.
   Don't lower it.
 - `preflight.sh` runs a real turn, so an exhausted limit shows up *before* the
@@ -134,17 +137,19 @@ What the design does about it:
 Don't leave capture running through practice sessions you don't need, and run
 preflight on the same day as the interview, not the night before.
 
-## Why not Gemini
+## Why only one model
 
-The original plan was Claude and Gemini side by side. Google discontinued the
-Gemini CLI's free OAuth tier for individuals mid-2026 — it now errors with
-`IneligibleTierError` and points at Antigravity, whose CLI has no headless
-mode. Forcing API-key auth got past that and then failed on quota routing.
+Three options were checked for a second pane, in order:
 
-So a pane can still be set to `gemini`, but it needs `GEMINI_API_KEY` and the
-SDK path. Set `PANE_B=gemini` in `.env` if you want it — it measured 815ms to
-first token with `thinking_budget=0` (5.3s with thinking on, for no benefit on
-this short a format).
+1. **Gemini CLI** — Google discontinued the free OAuth tier for individuals
+   mid-2026; it errors with `IneligibleTierError` and points at Antigravity.
+   Forcing API-key auth got past that and then failed on quota routing.
+2. **Antigravity CLI** (`/usr/local/bin/antigravity`) — no headless mode.
+   `-p`, `--print`, `--prompt`, `--headless`, `--cli` all return silently with
+   no output. The binary is `#!/usr/bin/env node \ require('../')`, a launcher
+   for the IDE app, not an agent.
+3. Both would need a key or a workaround that wasn't wanted, so the answer is
+   Sonnet alone rather than Sonnet paired with something worse.
 
 ## Configuration
 
@@ -153,7 +158,7 @@ Everything is in `.env`.
 | Setting | Default | What it does |
 |---|---|---|
 | `WINDOW_SECONDS` | 90 | How far back the trigger looks. Raise for long multi-part questions, lower if the interviewer rambles and the model latches onto stale context. |
-| `PANE_A` / `PANE_B` | `claude:sonnet` / `claude:opus` | `claude:<alias>` for the keyless CLI path, or `gemini` for the SDK path. |
+| `CLAUDE_MODEL` | `sonnet` | Model alias passed to the CLI. |
 | `RECYCLE_AFTER` | 8 | Turns before a session is replaced, so old answers stop anchoring new ones. Costs one warmup turn each time. |
 | `CHUNK_SECONDS` | 3 | Transcription slice. Smaller means less tail lag and more word-splitting at boundaries. |
 
@@ -161,7 +166,6 @@ Everything is in `.env`.
 
 ```bash
 ./.venv/bin/python scripts/test_filter.py sonnet   # does it ignore small talk?
-./.venv/bin/python scripts/test_filter.py opus
 ./.venv/bin/python scripts/e2e.py                  # full pipeline, real audio
 ```
 
