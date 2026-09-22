@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# The one thing you run. Sets up on first launch, starts the server, opens the
+# browser when it is actually serving.
+#
+# This is deliberately not scripts/start.sh: that one assumes a working .venv
+# and an operator who knows the URL. This one is for a cold machine and for
+# being double-clicked (see "Interview Copilot.command").
+set -uo pipefail
+cd "$(dirname "$0")/.."
+ROOT="$PWD"
+PY="$ROOT/.venv/bin/python"
+
+die() { printf "\n\033[31m%s\033[0m\n\n" "$1" >&2; exit 1; }
+say() { printf "\033[2m%s\033[0m\n" "$1"; }
+
+# --- hard prerequisites -------------------------------------------------
+# Checked here rather than left to fail deep inside ffmpeg, because the fixes
+# are one brew command each and the failure is otherwise cryptic.
+[ "$(uname)" = "Darwin" ] || die "macOS only: capture uses avfoundation and a BlackHole loopback device."
+command -v python3 >/dev/null || die "python3 not found. Install Python 3.11+ (brew install python)."
+command -v ffmpeg  >/dev/null || die "ffmpeg not found.  brew install ffmpeg"
+system_profiler SPAudioDataType 2>/dev/null | grep -q "BlackHole 2ch" \
+  || die "BlackHole 2ch not installed.  brew install blackhole-2ch
+Then build a Multi-Output Device: see docs/audio-setup.md"
+
+# --- first run setup ----------------------------------------------------
+if [ ! -x "$PY" ]; then
+  say "first run: creating .venv"
+  python3 -m venv .venv || die "could not create .venv"
+fi
+if ! "$PY" -c "import fastapi, faster_whisper, anthropic" 2>/dev/null; then
+  say "first run: installing dependencies (a few minutes, ~1GB of wheels)"
+  "$ROOT/.venv/bin/pip" install --quiet --upgrade pip \
+    && "$ROOT/.venv/bin/pip" install --quiet -r requirements.txt \
+    || die "dependency install failed. Run it by hand to see why:
+  ./.venv/bin/pip install -r requirements.txt"
+fi
+if [ ! -f .env ]; then
+  cp .env.example .env
+  say "created .env from .env.example"
+fi
+
+set -a; . ./.env; set +a
+PORT="${PORT:-8477}"
+BACKEND="${BACKEND:-api}"
+URL="http://127.0.0.1:$PORT"
+
+# --- backend sanity -----------------------------------------------------
+# A cheap config check, not a live call. `scripts/preflight.sh` is the one
+# that proves auth and quota with a real turn; run that before an interview.
+case "$BACKEND" in
+  api)
+    [ -n "${ANTHROPIC_API_KEY:-}" ] || die "BACKEND=api but ANTHROPIC_API_KEY is empty in .env.
+Get a key: https://console.anthropic.com/settings/keys
+Or set BACKEND=cli if you have the claude CLI logged in." ;;
+  cli)
+    command -v "${CLAUDE_BIN:-claude}" >/dev/null \
+      || die "BACKEND=cli but '${CLAUDE_BIN:-claude}' is not on PATH. Install the Claude CLI and log in, or use BACKEND=api." ;;
+  *) die "BACKEND=$BACKEND is not valid. Use 'api' or 'cli'." ;;
+esac
+
+# --- port ---------------------------------------------------------------
+# Reclaim the port from a previous run of THIS app only. Checking the command
+# name first matters: if PORT is pointed at something else's port, a blind
+# kill of whatever holds it would take down an unrelated process.
+# -sTCP:LISTEN matters: a bare `lsof -ti :PORT` also lists every CLIENT
+# connected to it, so an open browser tab pointed at this app looks exactly
+# like a squatter holding the port.
+for pid in $(lsof -ti :"$PORT" -sTCP:LISTEN 2>/dev/null); do
+  cmd=$(ps -o command= -p "$pid" 2>/dev/null)
+  case "$cmd" in
+    *uvicorn*server.app*|*"$ROOT"*)
+      say "port $PORT held by an older instance (pid $pid); stopping it"
+      kill "$pid" 2>/dev/null || true
+      sleep 1 ;;
+    *)
+      die "port $PORT is in use by something else (pid $pid):
+  $cmd
+Change PORT in .env, or stop that process yourself." ;;
+  esac
+done
+
+# --- run ----------------------------------------------------------------
+"$ROOT/.venv/bin/uvicorn" server.app:app --host 127.0.0.1 --port "$PORT" --log-level warning &
+SERVER=$!
+
+# Kill the server AND whatever ffmpeg child it started. Without the process
+# group kill, a capture running at Ctrl-C leaves ffmpeg holding the audio
+# device and the next launch captures silence.
+cleanup() { kill "$SERVER" 2>/dev/null; wait "$SERVER" 2>/dev/null; pkill -P "$SERVER" 2>/dev/null; }
+trap 'printf "\nstopping\n"; cleanup; exit 0' INT TERM
+
+# Wait until it actually serves, then open the browser. Polling, not sleeping:
+# a cold start loads the STT model and can take a while on the first run.
+for _ in $(seq 1 120); do
+  if curl -fsS --max-time 1 "$URL/health" >/dev/null 2>&1; then
+    printf "\nInterview Copilot -> %s   (backend: %s)\n" "$URL" "$BACKEND"
+    printf "Trigger with \033[1m^\033[0m\033[1m⇧Space\033[0m anywhere, or the button in the page.\n"
+    printf "Ctrl-C here to stop.\n\n"
+    open "$URL"
+    wait "$SERVER"
+    exit $?
+  fi
+  kill -0 "$SERVER" 2>/dev/null || { wait "$SERVER"; die "the server exited during startup (scroll up for the reason)."; }
+  sleep 0.5
+done
+cleanup
+die "the server did not start responding within 60s."

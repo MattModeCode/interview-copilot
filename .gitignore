@@ -1,6 +1,21 @@
+# Local environment
 .venv/
 .env
 __pycache__/
 *.pyc
+
+# Per-interview material. Never commit these: domain.md describes a real
+# interview, and fixtures/ holds recorded speech.
 domain.md
 fixtures/
+
+# Agent/editor config is local to whoever is working on this, not part of
+# the project. Listed explicitly so it can never be committed by accident.
+.claude/
+CLAUDE.md
+.mcp.json
+AGENTS.md
+.cursor/
+.idea/
+.vscode/
+.DS_Store

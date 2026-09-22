@@ -1,14 +1,15 @@
 """Does the prompt pick the right question out of a noisy transcript?
 
-Runs against the real default backend -- a warm `claude` CLI process -- so
-this tests the shipping path, not an API stand-in.
+Runs against whichever backend .env selects (api or cli), so it tests the
+shipping path rather than a stand-in. Costs one real model turn per case.
 """
-import asyncio, re, sys
+import asyncio
+import re
+import sys
 sys.path.insert(0, ".")
-from server.cli_pool import WarmSession
-from server.prompt import SYSTEM, build_user_message
-
-MODEL = sys.argv[1] if len(sys.argv) > 1 else "sonnet"
+from server import config
+from server.models import make_session
+from server.prompt import build_user_message
 
 CASES = [
     dict(
@@ -65,7 +66,7 @@ CASES = [
 
 
 async def run_case(c) -> bool:
-    sess = WarmSession(MODEL, SYSTEM)
+    sess = make_session()
     await asyncio.to_thread(sess.start)
     if sess.failed:
         print(f"SKIP  {c['name']}: warmup failed: {sess.failed}")
@@ -92,7 +93,7 @@ async def run_case(c) -> bool:
 
 
 async def main() -> int:
-    print(f"backend: warm claude CLI ({MODEL})\n")
+    print(f"backend: {config.BACKEND} ({config.model_label()})\n")
     results = await asyncio.gather(*(run_case(c) for c in CASES))
     print(f"\n{sum(results)}/{len(results)} passed")
     return 0 if all(results) else 1

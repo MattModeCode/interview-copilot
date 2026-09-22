@@ -1,5 +1,9 @@
 """End-to-end: speak into BlackHole, confirm it comes out as an answer."""
-import asyncio, json, subprocess, sys, time
+import asyncio
+import json
+import subprocess
+import sys
+import time
 import websockets
 
 URL = "ws://127.0.0.1:8477/ws"

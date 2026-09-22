@@ -57,27 +57,72 @@ fi
 
 echo
 echo "Models"
-CB="${CLAUDE_BIN:-claude}"
-if [ -x "$CB" ]; then
-  ok "claude CLI found at $CB"
-  # This is the check that matters: a live turn proves auth AND quota. A
-  # subscription session limit only shows up when you actually ask something.
-  RESP=$(echo "Reply with exactly: READY" | timeout 60 "$CB" -p --model sonnet \
-      --strict-mcp-config --mcp-config '{"mcpServers":{}}' --setting-sources '' \
-      --system-prompt "Reply with exactly one word." --restricted \
-      --no-session-persistence 2>&1 | tr '\n' ' ')
-  case "$(echo "$RESP" | tr 'A-Z' 'a-z')" in
-    *"session limit"*|*"usage limit"*|*"quota"*|*"rate limit"*)
-      no "SUBSCRIPTION LIMIT ALREADY REACHED -- $(echo "$RESP" | head -c 90)" ;;
-    *ready*)
-      ok "claude subscription is live and has quota" ;;
-    *)
-      no "claude CLI did not answer: $(echo "$RESP" | head -c 90)" ;;
-  esac
+BACKEND="${BACKEND:-api}"
+echo "        backend: $BACKEND"
+if [ "$BACKEND" = "api" ]; then
+  if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+    no "BACKEND=api but ANTHROPIC_API_KEY is empty in .env"
+  else
+    # A real streamed turn. This is the check that matters: it proves the key
+    # is valid, the model id exists, and the account can actually be billed.
+    RESP=$(./.venv/bin/python - <<'EOF' 2>&1 | tr '\n' ' '
+import os, sys
+try:
+    from anthropic import Anthropic
+except ImportError:
+    print("anthropic package missing"); sys.exit(0)
+try:
+    c = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    out = []
+    with c.messages.stream(
+        model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5"),
+        max_tokens=16,
+        system="Reply with exactly one word.",
+        messages=[{"role": "user", "content": "Reply with exactly: READY"}],
+    ) as st:
+        for t in st.text_stream:
+            out.append(t)
+    print("".join(out))
+except Exception as e:
+    print(f"{type(e).__name__}: {e}")
+EOF
+)
+    case "$(echo "$RESP" | tr 'A-Z' 'a-z')" in
+      *"rate_limit"*|*"credit balance"*|*"quota"*|*overloaded*)
+        no "API LIMIT OR BILLING PROBLEM -- $(echo "$RESP" | head -c 90)" ;;
+      *authentication*|*"invalid x-api-key"*|*permission*)
+        no "API key rejected -- $(echo "$RESP" | head -c 90)" ;;
+      *ready*)
+        ok "Anthropic API key is live (${ANTHROPIC_MODEL:-claude-sonnet-5})" ;;
+      *)
+        no "API did not answer: $(echo "$RESP" | head -c 90)" ;;
+    esac
+  fi
+elif [ "$BACKEND" = "cli" ]; then
+  CB=$(command -v "${CLAUDE_BIN:-claude}" 2>/dev/null || echo "")
+  if [ -n "$CB" ]; then
+    ok "claude CLI found at $CB"
+    # This is the check that matters: a live turn proves auth AND quota. A
+    # subscription session limit only shows up when you actually ask something.
+    RESP=$(echo "Reply with exactly: READY" | timeout 60 "$CB" -p --model "${CLAUDE_MODEL:-sonnet}" \
+        --strict-mcp-config --mcp-config '{"mcpServers":{}}' --setting-sources '' \
+        --system-prompt "Reply with exactly one word." --restricted \
+        --no-session-persistence 2>&1 | tr '\n' ' ')
+    case "$(echo "$RESP" | tr 'A-Z' 'a-z')" in
+      *"session limit"*|*"usage limit"*|*"quota"*|*"rate limit"*)
+        no "SUBSCRIPTION LIMIT ALREADY REACHED -- $(echo "$RESP" | head -c 90)" ;;
+      *ready*)
+        ok "claude subscription is live and has quota" ;;
+      *)
+        no "claude CLI did not answer: $(echo "$RESP" | head -c 90)" ;;
+    esac
+    echo "        model: ${CLAUDE_MODEL:-sonnet}"
+  else
+    no "claude CLI '${CLAUDE_BIN:-claude}' not on PATH -- install and log in, or set BACKEND=api"
+  fi
 else
-  no "claude CLI not found at $CB -- set CLAUDE_BIN in .env"
+  no "BACKEND=$BACKEND is not valid. Use 'api' or 'cli'."
 fi
-echo "        model: ${CLAUDE_MODEL:-sonnet}"
 if [ -f domain.md ]; then ok "domain.md present ($(wc -l < domain.md | tr -d ' ') lines)"
 else wa "no domain.md -- running with no interview-specific vocabulary context"; fi
 

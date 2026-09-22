@@ -1,0 +1,10 @@
+# Deliberately narrow: this repo is not linted into a style, it is linted for
+# real mistakes (unused names, undefined names, broken f-strings).
+line-length = 100
+target-version = "py311"
+
+[lint]
+select = ["E4", "E7", "E9", "F", "W"]
+# E402: the test scripts insert "." on sys.path before importing server/.
+# E701/E702: the compact one-line helpers in the scripts are deliberate.
+ignore = ["E402", "E701", "E702", "E741"]
