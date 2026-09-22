@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Interview Copilot</title>
+<style>
+  :root{
+    --bg:#0d0f12; --panel:#15181d; --edge:#242a33; --edge-hot:#3a4350;
+    --ink:#e6e9ee; --dim:#8b94a3; --faint:#5b6472;
+    --accent:#e0a33e; --ok:#4ea87b; --bad:#d4635f;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,sans-serif;
+    display:flex;flex-direction:column;overflow:hidden;
+  }
+  header{
+    display:flex;align-items:center;gap:14px;padding:10px 16px;
+    border-bottom:1px solid var(--edge);background:var(--panel);flex:none;
+  }
+  .brand{font-weight:600;letter-spacing:.2px;font-size:14px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--faint);
+       display:inline-block;margin-right:6px;vertical-align:1px}
+  .dot.live{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  .dot.err{background:var(--bad)}
+  .status{font-size:12.5px;color:var(--dim)}
+  .spacer{flex:1}
+  button{
+    font:inherit;font-size:13px;color:var(--ink);background:#1d222a;
+    border:1px solid var(--edge);border-radius:7px;padding:6px 12px;cursor:pointer;
+  }
+  button:hover{border-color:#3a4350;background:#232932}
+  button:disabled{opacity:.4;cursor:default}
+  select{
+    font:inherit;font-size:13px;color:var(--ink);background:#1d222a;
+    border:1px solid var(--edge);border-radius:7px;padding:6px 8px;
+  }
+  #trigger{
+    background:var(--accent);color:#1a1205;border-color:var(--accent);
+    font-weight:650;padding:8px 20px;
+  }
+  #trigger:hover{background:#efb954}
+  #trigger.busy{background:#3a3222;color:var(--accent);border-color:#4a4030}
+  main{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:1px;
+       background:var(--edge);min-height:0}
+  .pane{background:var(--bg);display:flex;flex-direction:column;min-height:0}
+  .pane-head{
+    display:flex;align-items:baseline;gap:10px;padding:8px 16px;
+    border-bottom:1px solid var(--edge);flex:none;
+  }
+  .pane-name{font-size:12px;font-weight:650;letter-spacing:.7px;text-transform:uppercase}
+  .pane-meta{font-size:11.5px;color:var(--faint);font-variant-numeric:tabular-nums}
+  .pane-body{
+    flex:1;overflow-y:auto;padding:16px 18px 32px;white-space:pre-wrap;
+    font-size:15.5px;line-height:1.62;
+  }
+  .pane-body .q{
+    display:block;color:var(--accent);font-weight:650;font-size:14px;
+    margin:0 0 12px;padding-bottom:10px;border-bottom:1px solid var(--edge);
+  }
+  .pane-body .pushed{color:var(--dim)}
+  .placeholder{color:var(--faint);font-style:italic}
+  .err{color:var(--bad)}
+  footer{
+    flex:none;border-top:1px solid var(--edge);background:var(--panel);
+    max-height:26vh;display:flex;flex-direction:column;
+  }
+  .foot-head{
+    display:flex;align-items:center;gap:10px;padding:6px 16px;
+    font-size:11.5px;color:var(--faint);letter-spacing:.5px;text-transform:uppercase;
+  }
+  #tx{overflow-y:auto;padding:0 16px 10px;font-size:13px;color:var(--dim);
+      line-height:1.5}
+  #tx .seg{margin-bottom:3px}
+  #tx .seg:last-child{color:var(--ink)}
+  #tx .ts{color:var(--faint);font-variant-numeric:tabular-nums;margin-right:8px;
+          font-size:11.5px}
+  .hidden{display:none}
+  kbd{background:#232932;border:1px solid var(--edge);border-bottom-width:2px;
+      border-radius:4px;padding:1px 5px;font-size:11px;font-family:inherit}
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">Interview Copilot</span>
+  <span class="status"><span class="dot" id="dot"></span><span id="status">connecting</span></span>
+  <span class="spacer"></span>
+  <select id="window" title="How far back to look">
+    <option value="30">last 30s</option>
+    <option value="60">last 60s</option>
+    <option value="90" selected>last 90s</option>
+    <option value="180">last 3 min</option>
+  </select>
+  <button id="capture">Start capture</button>
+  <button id="clear" title="Wipe the transcript buffer">Clear</button>
+  <button id="trigger" disabled>Answer <kbd>⌃⇧Space</kbd></button>
+</header>
+
+<main>
+  <section class="pane">
+    <div class="pane-head">
+      <span class="pane-name">Claude</span>
+      <span class="pane-meta" id="meta-claude"></span>
+    </div>
+    <div class="pane-body" id="out-claude"><span class="placeholder">Waiting for a question.</span></div>
+  </section>
+  <section class="pane">
+    <div class="pane-head">
+      <span class="pane-name">Gemini</span>
+      <span class="pane-meta" id="meta-gemini"></span>
+    </div>
+    <div class="pane-body" id="out-gemini"><span class="placeholder">Waiting for a question.</span></div>
+  </section>
+</main>
+
+<footer>
+  <div class="foot-head">
+    <span>Live transcript</span>
+    <span class="spacer"></span>
+    <span id="segcount">0 segments</span>
+  </div>
+  <div id="tx"></div>
+</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+const panes = ["claude","gemini"];
+let ws, busy = false, capturing = false, buf = {claude:"",gemini:""};
+
+function connect(){
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => setStatus("connected — capture stopped", false);
+  ws.onclose = () => { setStatus("disconnected — retrying", "err"); setTimeout(connect, 1200); };
+  ws.onmessage = e => handle(JSON.parse(e.data));
+}
+
+function setStatus(text, state){
+  $("status").textContent = text;
+  const d = $("dot");
+  d.className = "dot" + (state === "err" ? " err" : state === true ? " live" : "");
+}
+
+function handle(m){
+  switch(m.type){
+    case "hello":
+      capturing = m.capturing;
+      (m.segments||[]).forEach(addSeg);
+      syncCapture();
+      if(!m.config.gemini_ready) note("gemini", "GEMINI_API_KEY not set.");
+      if(m.config.claude_mode === "cli")
+        note("claude", "No ANTHROPIC_API_KEY — using the slow `claude` CLI fallback (~5s).");
+      break;
+    case "status":
+      capturing = m.capturing; syncCapture();
+      if(m.error) setStatus("capture error: " + m.error, "err");
+      break;
+    case "segment": addSeg(m); break;
+    case "flushing": setStatus("catching the tail of the question…", true); break;
+    case "cleared": $("tx").innerHTML = ""; $("segcount").textContent = "0 segments"; break;
+    case "answer_start":
+      busy = true; syncTrigger();
+      panes.forEach(p => { buf[p] = ""; $("out-"+p).innerHTML =
+        '<span class="placeholder">thinking…</span>'; $("meta-"+p).textContent = ""; });
+      break;
+    case "answer": onAnswer(m); break;
+    case "answer_end":
+      busy = false; syncTrigger();
+      setStatus(capturing ? "capturing" : "capture stopped", capturing);
+      break;
+  }
+}
+
+function onAnswer(m){
+  const el = $("out-"+m.pane), meta = $("meta-"+m.pane);
+  if(m.event === "first_token"){ meta.textContent = m.ms + "ms to first token"; }
+  else if(m.event === "delta"){ buf[m.pane] += m.text; render(m.pane); }
+  else if(m.event === "done"){ meta.textContent += `  ·  ${(m.ms/1000).toFixed(1)}s total`; }
+  else if(m.event === "error"){
+    el.innerHTML = ""; note(m.pane, m.message);
+  }
+}
+
+function render(p){
+  const el = $("out-"+p);
+  let html = escapeHtml(buf[p]);
+  html = html.replace(/^Q:(.*)$/m, (_,q) => `<span class="q">${q.trim()}</span>`);
+  html = html.replace(/^IF PUSHED:(.*)$/m, (_,t) => `<span class="pushed">IF PUSHED:${t}</span>`);
+  el.innerHTML = html;
+}
+
+function note(p, msg){
+  const el = $("out-"+p);
+  const d = document.createElement("div");
+  d.className = "err"; d.textContent = msg;
+  el.appendChild(d);
+}
+
+function escapeHtml(s){
+  return s.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+}
+
+function addSeg(m){
+  const tx = $("tx");
+  const d = document.createElement("div");
+  d.className = "seg";
+  const mm = String(Math.floor(m.t/60)).padStart(2,"0");
+  const ss = String(Math.floor(m.t%60)).padStart(2,"0");
+  d.innerHTML = `<span class="ts">${mm}:${ss}</span>${escapeHtml(m.text)}`;
+  tx.appendChild(d);
+  tx.scrollTop = tx.scrollHeight;
+  $("segcount").textContent = tx.children.length + " segments";
+}
+
+function syncCapture(){
+  $("capture").textContent = capturing ? "Stop capture" : "Start capture";
+  setStatus(capturing ? "capturing" : "capture stopped", capturing);
+  syncTrigger();
+}
+function syncTrigger(){
+  $("trigger").disabled = busy;
+  $("trigger").classList.toggle("busy", busy);
+  $("trigger").innerHTML = busy ? "Answering…" : 'Answer <kbd>⌃⇧Space</kbd>';
+}
+
+$("capture").onclick = () => ws.send(JSON.stringify({type: capturing ? "stop" : "start"}));
+$("clear").onclick   = () => ws.send(JSON.stringify({type:"clear"}));
+$("trigger").onclick = fire;
+function fire(){
+  if(busy) return;
+  ws.send(JSON.stringify({type:"trigger", window: +$("window").value}));
+}
+document.addEventListener("keydown", e => {
+  if(e.code === "Space" && e.ctrlKey && e.shiftKey){ e.preventDefault(); fire(); }
+});
+connect();
+</script>
+</body>
+</html>
