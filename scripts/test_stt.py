@@ -105,7 +105,7 @@ def test_forced_cut() -> None:
     check("a run past the max is cut into pieces", len(out) >= 2, f"got {len(out)}")
     if out:
         joined = sum(vad.duration(o) for o in out) + vad.duration(s.flush() or b"")
-        expected = vad.duration(long + tone(3000)) 
+        expected = vad.duration(long + tone(3000))
         check("no audio is lost across the cut", joined >= expected,
               f"{joined:.2f}s kept of {expected:.2f}s spoken")
 

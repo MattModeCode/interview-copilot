@@ -157,7 +157,8 @@ async def health() -> JSONResponse:
             "capturing": capture.running,
             "capture_error": capture.error,
             "segments": len(transcript.all_segments()),
-            "model": config.CLAUDE_MODEL,
+            "backend": config.BACKEND,
+            "model": config.model_label(),
             "pool": pool_status(),
             "window_seconds": config.WINDOW_SECONDS,
             "audio_device": config.AUDIO_DEVICE,
@@ -183,7 +184,8 @@ async def ws(websocket: WebSocket) -> None:
                 "segments": transcript.all_segments(),
                 "config": {
                     "window": config.WINDOW_SECONDS,
-                    "model": config.CLAUDE_MODEL,
+                    "backend": config.BACKEND,
+                    "model": config.model_label(),
                     "recycle_after": config.RECYCLE_AFTER,
                 },
             }

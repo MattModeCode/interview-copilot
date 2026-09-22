@@ -140,7 +140,7 @@ function handle(m){
     case "hello":
       capturing = m.capturing;
       (m.segments||[]).forEach(addSeg);
-      if(m.config.model) $("name-a").textContent = "Claude " + m.config.model[0].toUpperCase() + m.config.model.slice(1);
+      if(m.config.model) $("name-a").textContent = prettyModel(m.config.model);
       syncCapture();
       break;
     case "status":
@@ -164,6 +164,11 @@ function handle(m){
   }
 }
 
+// "sonnet" (cli) and "claude-sonnet-5" (api) both arrive here.
+function prettyModel(id){
+  const bare = id.replace(/^claude-?/, "").replace(/-latest$/, "");
+  return "Claude " + bare.split("-").map(w => w[0] ? w[0].toUpperCase()+w.slice(1) : w).join(" ");
+}
 function onPools(pools){
   warm = pools;
   const parts = []; let err = null, limit = false;

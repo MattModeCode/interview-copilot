@@ -1,0 +1,37 @@
+name: Bug report
+description: Something is broken
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not paste your `.env`, an API key, or a real interview transcript.
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Backend
+      options: [api, cli]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: preflight
+    attributes:
+      label: preflight output
+      description: "`./scripts/preflight.sh` — redact anything identifying."
+      render: shell
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+  - type: textarea
+    id: logs
+    attributes:
+      label: Server output
+      render: shell

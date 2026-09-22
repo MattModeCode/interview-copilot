@@ -141,17 +141,41 @@ WINDOW_SECONDS = _int("WINDOW_SECONDS", 90)
 TRANSCRIPT_MAX_SECONDS = _int("TRANSCRIPT_MAX_SECONDS", 3600)
 
 # --- model ---
-# One pane, no API key: a warm `claude` CLI session on the existing
-# subscription login.
+# Two answering backends, same interface, chosen by BACKEND:
+#
+#   api  (default)  the Anthropic Messages API with an ANTHROPIC_API_KEY.
+#                   Works for anyone. Startup is free, the static prefix is
+#                   cached, so first-token latency lands in the same place
+#                   the CLI backend gets to by keeping a process warm.
+#   cli             a warm `claude` CLI session on an existing Claude
+#                   subscription login, no key. Only works if you have the
+#                   CLI installed and logged in; burns subscription quota.
+#
+# See server/models.py. Everything downstream (prompt, streaming, auto-clear)
+# is identical either way.
+BACKEND = os.environ.get("BACKEND", "api").strip().lower()
+
+# -- api backend --
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
+
+# -- cli backend --
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "sonnet")
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
-# Answers stay in the session context, so recycle it periodically to stop
-# earlier answers anchoring later ones. Recycling happens in the background
-# between questions and costs one warmup turn each time -- don't set it low.
+# Resolved from PATH by default. Set CLAUDE_BIN only if `claude` is somewhere
+# your shell cannot see.
+CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "").strip() or "claude"
+# CLI only. Answers stay in the session context, so recycle it periodically to
+# stop earlier answers anchoring later ones. Recycling happens in the
+# background between questions and costs one warmup turn each -- don't set it
+# low.
 RECYCLE_AFTER = _int("RECYCLE_AFTER", 8)
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+
 MAX_TOKENS = _int("MAX_TOKENS", 1200)
+
+
+def model_label() -> str:
+    """What the UI and /health call the answering model."""
+    return ANTHROPIC_MODEL if BACKEND == "api" else CLAUDE_MODEL
 
 # --- server ---
 HOST = os.environ.get("HOST", "127.0.0.1")
