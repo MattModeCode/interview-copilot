@@ -1,0 +1,13 @@
+# Server
+fastapi
+uvicorn[standard]
+python-multipart
+websockets
+
+# Speech to text. faster-whisper pulls ctranslate2, onnxruntime (for Silero
+# VAD), av and numpy. No whisper.cpp, no separate server process.
+faster-whisper>=1.1
+
+# Answering path: the claude CLI is driven as a subprocess, so no SDK is
+# required. pynput is the global hotkey.
+pynput

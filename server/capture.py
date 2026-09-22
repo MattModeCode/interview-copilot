@@ -1,104 +1,32 @@
-"""Audio capture -> chunked WAV -> whisper-server -> transcript buffer.
+"""Audio capture -> continuous PCM -> endpointed utterances -> transcript.
 
-ffmpeg runs once, continuously, and uses its segment muxer to drop a finished
-WAV every CHUNK_SECONDS. A watcher thread picks up each completed file and
-POSTs it to whisper-server, which keeps the model resident so we pay the load
-cost once instead of per chunk.
+ffmpeg runs once and writes raw 16 kHz mono PCM to a pipe. Nothing on disk,
+nothing cut on a timer: a reader thread hands the stream to the segmenter,
+which cuts it at pauses, and each finished utterance goes straight to the
+in-process Whisper model.
 
-Chunking (rather than true streaming) costs up to CHUNK_SECONDS of latency on
-the newest words. That is fine: the trigger looks back over a 90s window, so a
-few seconds of lag at the tail never loses the question.
+Latency is now tied to how the person talks rather than to a fixed chunk. A
+question that ends with a pause -- which is every question -- is decoded as
+soon as that pause is SILENCE_HOLD_MS long, so the tail of a question lands
+sooner than the old three-second slice could deliver it. A speaker who never
+pauses is force-cut at SEGMENT_MAX_SECONDS, at the quietest point available.
 """
-import os
-import re
-import shutil
 import signal
 import subprocess
-import tempfile
 import threading
-import time
-from pathlib import Path
-
-import httpx
 
 from . import config
+from .stt import Transcriber
 
-# whisper emits these on silence or music. They are model artifacts, not speech,
-# and they poison the transcript window if they get through.
-_HALLUCINATIONS = {
-    "", "you", "thank you", "thanks for watching", "thank you.", "you.",
-    "thanks for watching!", "please subscribe", "[blank_audio]", "(silence)",
-    "bye", "bye.", "subtitles by the amara.org community", "so", "so.",
-    "[music]", "(upbeat music)", "[ silence ]", ".", "...", "1", "okay",
-}
-
-
-def _is_noise(text: str) -> bool:
-    t = text.strip().lower()
-    if t in _HALLUCINATIONS:
-        return True
-    if not re.search(r"[a-z]", t):
-        return True
-    # A lone bracketed tag like [BLANK_AUDIO] or (wind blowing).
-    if re.fullmatch(r"[\[\(].*[\]\)]", t):
-        return True
-    return False
-
-
-class WhisperServer:
-    """Owns the whisper-server subprocess."""
-
-    def __init__(self) -> None:
-        self.proc: subprocess.Popen | None = None
-
-    def start(self) -> None:
-        if not Path(config.WHISPER_MODEL).exists():
-            raise FileNotFoundError(f"whisper model missing: {config.WHISPER_MODEL}")
-        if self._alive():
-            return  # somebody already started one
-        port = config.WHISPER_SERVER.rsplit(":", 1)[-1]
-        self.proc = subprocess.Popen(
-            [
-                config.WHISPER_BIN,
-                "-m", config.WHISPER_MODEL,
-                "--port", port,
-                "--host", "127.0.0.1",
-                "-t", "8",
-                "--no-timestamps",
-                "-l", "en",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        for _ in range(120):
-            if self._alive():
-                return
-            time.sleep(0.5)
-        raise RuntimeError("whisper-server did not come up within 60s")
-
-    def _alive(self) -> bool:
-        try:
-            httpx.get(config.WHISPER_SERVER + "/", timeout=1.0)
-            return True
-        except Exception:
-            return False
-
-    def stop(self) -> None:
-        if self.proc and self.proc.poll() is None:
-            self.proc.terminate()
-            try:
-                self.proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
+READ_BYTES = 4096
 
 
 class Capture:
     def __init__(self, transcript, on_segment=None) -> None:
         self.transcript = transcript
         self.on_segment = on_segment
-        self.whisper = WhisperServer()
+        self.stt = Transcriber()
         self._ff: subprocess.Popen | None = None
-        self._dir: str | None = None
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self.running = False
@@ -110,24 +38,24 @@ class Capture:
             return
         self.error = None
         self._stop.clear()
-        self.whisper.start()
-        self._dir = tempfile.mkdtemp(prefix="icopilot-audio-")
+        # Loading the model is the slow part and it must fail loudly here,
+        # before ffmpeg is holding the audio device, not silently mid-call.
+        self.stt.start()
+        self.stt.reset_context()
         self._ff = subprocess.Popen(
             [
                 "ffmpeg", "-hide_banner", "-loglevel", "error",
                 "-f", "avfoundation",
                 "-i", f":{config.AUDIO_DEVICE}",
                 "-ac", "1", "-ar", str(config.SAMPLE_RATE),
-                "-f", "segment",
-                "-segment_time", str(config.CHUNK_SECONDS),
-                "-reset_timestamps", "1",
-                os.path.join(self._dir, "chunk_%06d.wav"),
+                "-f", "s16le", "-",
             ],
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            bufsize=0,
         )
         self.running = True
-        for target in (self._watch_files, self._watch_ffmpeg):
+        for target in (self._read_audio, self._watch_ffmpeg):
             th = threading.Thread(target=target, daemon=True)
             th.start()
             self._threads.append(th)
@@ -141,59 +69,68 @@ class Capture:
                 self._ff.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self._ff.kill()
-        self.whisper.stop()
-        if self._dir:
-            shutil.rmtree(self._dir, ignore_errors=True)
-            self._dir = None
+        for th in self._threads:
+            th.join(timeout=2)
+        self._threads.clear()
+        # Whatever was mid-sentence when the button was pressed is still
+        # speech, and the operator may well trigger on it.
+        try:
+            for text in self.stt.flush():
+                self._emit(text)
+        except Exception as err:
+            self.error = f"stt: {err}"
+        self._ff = None
+
+    def flush_now(self) -> int:
+        """Close the open utterance and emit it. Returns segments emitted.
+
+        The trigger calls this: a speaker who has not paused yet is holding
+        the end of the question inside an open segment, and waiting for their
+        pause is waiting for the wrong thing.
+        """
+        if not self.running:
+            return 0
+        try:
+            texts = self.stt.flush()
+        except Exception as err:
+            self.error = f"stt: {err}"
+            return 0
+        for text in texts:
+            self._emit(text)
+        return len(texts)
 
     # -- workers -----------------------------------------------------------
+    def _read_audio(self) -> None:
+        stream = self._ff.stdout if self._ff else None
+        if stream is None:
+            return
+        while not self._stop.is_set():
+            try:
+                block = stream.read(READ_BYTES)
+            except (OSError, ValueError):
+                break
+            if not block:
+                break
+            try:
+                for text in self.stt.feed(block):
+                    self._emit(text)
+            except Exception as err:  # never let one bad decode end capture
+                self.error = f"stt: {err}"
+        if self.stt.error and not self.error:
+            self.error = self.stt.error
+
     def _watch_ffmpeg(self) -> None:
         """Surface ffmpeg dying (wrong device index, device in use, no perms)."""
-        if not self._ff:
+        if not self._ff or not self._ff.stderr:
             return
-        _, err = self._ff.communicate()
+        err = self._ff.stderr.read()
         if self._stop.is_set():
             return
         msg = (err or b"").decode(errors="replace").strip()
         self.error = msg or "ffmpeg exited unexpectedly"
         self.running = False
 
-    def _watch_files(self) -> None:
-        seen: set[str] = set()
-        while not self._stop.is_set():
-            if not self._dir:
-                break
-            try:
-                files = sorted(Path(self._dir).glob("chunk_*.wav"))
-            except OSError:
-                break
-            # The newest file is still being written by ffmpeg; leave it.
-            for path in files[:-1]:
-                if path.name in seen:
-                    continue
-                seen.add(path.name)
-                self._transcribe(path)
-                path.unlink(missing_ok=True)
-            time.sleep(0.25)
-
-    def _transcribe(self, path: Path) -> None:
-        try:
-            if path.stat().st_size < 4000:  # header-only / near-empty
-                return
-            with open(path, "rb") as fh:
-                r = httpx.post(
-                    config.WHISPER_SERVER + "/inference",
-                    files={"file": (path.name, fh, "audio/wav")},
-                    data={"response_format": "json", "temperature": "0"},
-                    timeout=60.0,
-                )
-            r.raise_for_status()
-            text = (r.json().get("text") or "").strip()
-        except Exception as e:  # a bad chunk must never kill the loop
-            self.error = f"stt: {e}"
-            return
-        if _is_noise(text):
-            return
+    def _emit(self, text: str) -> None:
         seg = self.transcript.add(text)
         if seg and self.on_segment:
             try:

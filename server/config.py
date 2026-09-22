@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -26,18 +27,47 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except ValueError:
+        return default
+
+
 # --- audio capture ---
 # Index from: ffmpeg -f avfoundation -list_devices true -i ""
 AUDIO_DEVICE = os.environ.get("AUDIO_DEVICE", "1")  # BlackHole 2ch
-CHUNK_SECONDS = _int("CHUNK_SECONDS", 3)
 SAMPLE_RATE = 16000
 
+# --- endpointing ---
+# Audio is no longer cut on a timer. It is cut where the speaker pauses, which
+# is the only place a cut is free. See server/vad.py for why.
+SILENCE_HOLD_MS = _int("SILENCE_HOLD_MS", 600)     # pause that ends an utterance
+MIN_SPEECH_MS = _int("MIN_SPEECH_MS", 240)         # shorter than this is a cough
+PREROLL_MS = _int("PREROLL_MS", 320)               # kept from before speech starts
+SEGMENT_MAX_SECONDS = _float("SEGMENT_MAX_SECONDS", 14.0)
+CUT_SEARCH_MS = _int("CUT_SEARCH_MS", 2500)        # how far back to hunt for a gap
+MIN_GAP_MS = _int("MIN_GAP_MS", 80)                # a gap this long is between words
+SEGMENT_GRACE_SECONDS = _float("SEGMENT_GRACE_SECONDS", 6.0)
+VAD_NOISE_FLOOR = _float("VAD_NOISE_FLOOR", 140.0)  # absolute RMS floor, 0-32768
+VAD_MARGIN = _float("VAD_MARGIN", 2.6)             # times the adaptive floor
+
 # --- speech to text ---
-WHISPER_SERVER = os.environ.get("WHISPER_SERVER", "http://127.0.0.1:8178")
-WHISPER_BIN = os.environ.get("WHISPER_BIN", "/opt/homebrew/bin/whisper-server")
-WHISPER_MODEL = os.environ.get(
-    "WHISPER_MODEL", "models/ggml-large-v3-turbo.bin"
-)
+# faster-whisper (CTranslate2), in-process. No subprocess, no HTTP hop, and
+# the model stays resident for the life of the server.
+STT_MODEL = os.environ.get("STT_MODEL", "large-v3-turbo")
+STT_DEVICE = os.environ.get("STT_DEVICE", "cpu")   # no Metal backend in CT2
+STT_COMPUTE = os.environ.get("STT_COMPUTE", "int8")
+STT_THREADS = _int("STT_THREADS", 8)
+STT_CACHE = os.environ.get("STT_CACHE", "")        # empty = the HF default
+STT_LANGUAGE = os.environ.get("STT_LANGUAGE", "en")
+STT_BEAM = _int("STT_BEAM", 5)
+STT_VAD_FILTER = os.environ.get("STT_VAD_FILTER", "1") == "1"
+# Confidence gates. These replace the word blacklist that used to delete
+# "okay", "so" and "bye" -- all of which are real interview speech.
+STT_NO_SPEECH_MAX = _float("STT_NO_SPEECH_MAX", 0.6)
+STT_LOGPROB_MIN = _float("STT_LOGPROB_MIN", -1.0)
+STT_PROMPT_CHARS = _int("STT_PROMPT_CHARS", 600)   # ~the 224-token prompt window
 
 # --- interview domain ---
 # Free text, injected into the system prompt. Tells the model what field
@@ -59,6 +89,50 @@ def _load_domain() -> str:
 
 
 DOMAIN_CONTEXT = _load_domain()
+
+
+def _vocab_prompt(brief: str) -> str:
+    """The decoder's prompt: the jargon out of domain.md, nothing else.
+
+    Whisper's initial_prompt window is about 224 tokens, so the brief itself
+    does not fit and would crowd out the rolling transcript anyway. What
+    actually moves accuracy is the vocabulary -- the terms that have a common
+    homophone ("rate equation" against "race equation"). Those are the ones a
+    brief writes in bold, in backticks, in capitals, or as a glossary entry.
+    """
+    if not brief:
+        return ""
+    terms: list[str] = []
+
+    def add(term: str) -> None:
+        term = term.strip().strip("*`_-: ")
+        if 1 < len(term) < 48 and term.lower() not in (t.lower() for t in terms):
+            terms.append(term)
+
+    # Emphasis and code spans first, everywhere in the brief. Doing these
+    # before the glossary pattern matters: a line written as
+    # "- **rate** vs **race**: homophone pair" holds two terms, and a
+    # single span up to the colon would capture one garbled string instead.
+    marked: list[tuple[int, int]] = []
+    for m in re.finditer(r"\*\*(.+?)\*\*|`([^`]+)`", brief):
+        add(next(g for g in m.groups() if g))
+        marked.append(m.span())
+
+    # Then glossary lines -- but only the ones that had no emphasis in them,
+    # since those have already given up their terms more precisely.
+    for m in re.finditer(r"^[ \t]*[-*][ \t]+([^:\n]{2,40}):", brief, re.M):
+        if any(s < m.end(1) and m.start(1) < e for s, e in marked):
+            continue
+        add(m.group(1))
+
+    for m in re.finditer(r"\b[A-Z]{2,8}\b", brief):
+        add(m.group())
+    if not terms:
+        return ""
+    return "Technical interview. Terms: " + ", ".join(terms[:40]) + "."
+
+
+STT_PROMPT = os.environ.get("STT_PROMPT", "") or _vocab_prompt(DOMAIN_CONTEXT)
 
 # --- transcript window ---
 # How far back the answer call looks. 90s comfortably covers a long

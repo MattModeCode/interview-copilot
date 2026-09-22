@@ -56,19 +56,15 @@ async def do_trigger(window: int | None = None) -> None:
 
     w = window or config.WINDOW_SECONDS
 
-    # Tail flush. Audio is transcribed in CHUNK_SECONDS slices, so the last
-    # few seconds of a question may still be inside an unfinished chunk when
-    # the button is pressed -- which is exactly when the question ENDS. If
-    # nothing has landed recently, wait briefly for the in-flight chunk
-    # rather than answering a truncated question.
+    # Tail flush. Audio is cut where the speaker pauses, and an interviewer
+    # who runs straight on can hold the end of the question inside an open
+    # segment for up to SEGMENT_MAX_SECONDS -- which is exactly when the
+    # question ENDS. So the trigger does not wait out a guessed delay, as it
+    # had to when chunks were on a timer. It closes the segment itself and
+    # decodes it, which costs only the decode.
     if capture.running and transcript.seconds_since_last() > 1.2:
-        before = transcript.count()
         await broadcast({"type": "flushing"})
-        deadline = asyncio.get_event_loop().time() + config.CHUNK_SECONDS + 1.5
-        while asyncio.get_event_loop().time() < deadline:
-            if transcript.count() > before:
-                break
-            await asyncio.sleep(0.15)
+        await asyncio.to_thread(capture.flush_now)
 
     text = transcript.window(w)
     await broadcast({"type": "answer_start", "window": w, "transcript": text})
@@ -84,6 +80,7 @@ async def do_trigger(window: int | None = None) -> None:
         # actually being asked now. Clearing after every answer means each
         # trigger starts from a clean slate of only what's been said since.
         transcript.clear()
+        capture.stt.reset_context()
         await broadcast({"type": "cleared"})
         await broadcast({"type": "answer_end"})
 
@@ -186,7 +183,6 @@ async def ws(websocket: WebSocket) -> None:
                 "segments": transcript.all_segments(),
                 "config": {
                     "window": config.WINDOW_SECONDS,
-                    "chunk": config.CHUNK_SECONDS,
                     "model": config.CLAUDE_MODEL,
                     "recycle_after": config.RECYCLE_AFTER,
                 },
@@ -214,6 +210,7 @@ async def ws(websocket: WebSocket) -> None:
                 await broadcast({"type": "status", "capturing": False})
             elif kind == "clear":
                 transcript.clear()
+                capture.stt.reset_context()
                 await broadcast({"type": "cleared"})
             elif kind == "ping":
                 await websocket.send_text(
