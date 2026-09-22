@@ -16,8 +16,7 @@ SCRIPT = [
 async def main():
     async with websockets.connect(URL) as ws:
         hello = json.loads(await ws.recv())
-        print(f"connected. claude={hello['config']['claude_mode']} "
-              f"gemini_ready={hello['config']['gemini_ready']}")
+        print(f"connected. panes={hello['config']['panes']}")
 
         await ws.send(json.dumps({"type": "clear"}))
         await ws.send(json.dumps({"type": "start"}))
@@ -37,10 +36,10 @@ async def main():
         for line in SCRIPT:
             subprocess.run(["say", "-v", "Samantha", "-r", "180", line], check=True)
             await asyncio.sleep(0.4)
-        print("finished speaking; waiting for transcription to settle")
+        print("finished speaking; waiting for transcription + model warmup")
 
         segs = []
-        settle = time.time() + 14
+        settle = time.time() + 30
         while time.time() < settle:
             try:
                 m = json.loads(await asyncio.wait_for(ws.recv(), timeout=2))
@@ -49,6 +48,12 @@ async def main():
             if m.get("type") == "segment":
                 segs.append(m["text"])
                 print(f"  [stt] {m['text'][:90]}")
+            elif m.get("type") == "pools":
+                pools = m["pools"]
+                if pools:
+                    print("  [warm] " + ", ".join(
+                        f"{k}={v['error'] or str(v['ready'])+' ready'}"
+                        for k, v in pools.items()))
 
         if not segs:
             print("FAIL nothing was transcribed -- audio never reached BlackHole")
@@ -57,7 +62,7 @@ async def main():
         print("\ntriggering answer...")
         await ws.send(json.dumps({"type": "trigger", "window": 120}))
 
-        out = {"claude": "", "gemini": ""}
+        out = {"a": "", "b": ""}
         meta = {}
         done = set()
         deadline = time.time() + 90
@@ -83,7 +88,7 @@ async def main():
         await ws.send(json.dumps({"type": "stop"}))
 
         ok = True
-        for p in ("claude", "gemini"):
+        for p in ("a", "b"):
             text = out[p].strip()
             print(f"\n===== {p.upper()} =====\n{text[:700]}")
             if not text:

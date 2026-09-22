@@ -102,17 +102,17 @@
 <main>
   <section class="pane">
     <div class="pane-head">
-      <span class="pane-name">Claude</span>
-      <span class="pane-meta" id="meta-claude"></span>
+      <span class="pane-name" id="name-a">Pane A</span>
+      <span class="pane-meta" id="meta-a"></span>
     </div>
-    <div class="pane-body" id="out-claude"><span class="placeholder">Waiting for a question.</span></div>
+    <div class="pane-body" id="out-a"><span class="placeholder">Waiting for a question.</span></div>
   </section>
   <section class="pane">
     <div class="pane-head">
-      <span class="pane-name">Gemini</span>
-      <span class="pane-meta" id="meta-gemini"></span>
+      <span class="pane-name" id="name-b">Pane B</span>
+      <span class="pane-meta" id="meta-b"></span>
     </div>
-    <div class="pane-body" id="out-gemini"><span class="placeholder">Waiting for a question.</span></div>
+    <div class="pane-body" id="out-b"><span class="placeholder">Waiting for a question.</span></div>
   </section>
 </main>
 
@@ -127,8 +127,8 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const panes = ["claude","gemini"];
-let ws, busy = false, capturing = false, buf = {claude:"",gemini:""};
+const panes = ["a","b"];
+let ws, busy = false, capturing = false, buf = {a:"",b:""}, warm = {};
 
 function connect(){
   ws = new WebSocket(`ws://${location.host}/ws`);
@@ -148,10 +148,8 @@ function handle(m){
     case "hello":
       capturing = m.capturing;
       (m.segments||[]).forEach(addSeg);
+      for(const [k,v] of Object.entries(m.config.panes||{})) $("name-"+k).textContent = v;
       syncCapture();
-      if(!m.config.gemini_ready) note("gemini", "GEMINI_API_KEY not set.");
-      if(m.config.claude_mode === "cli")
-        note("claude", "No ANTHROPIC_API_KEY — using the slow `claude` CLI fallback (~5s).");
       break;
     case "status":
       capturing = m.capturing; syncCapture();
@@ -159,6 +157,7 @@ function handle(m){
       break;
     case "segment": addSeg(m); break;
     case "flushing": setStatus("catching the tail of the question…", true); break;
+    case "pools": onPools(m.pools); break;
     case "cleared": $("tx").innerHTML = ""; $("segcount").textContent = "0 segments"; break;
     case "answer_start":
       busy = true; syncTrigger();
@@ -171,6 +170,20 @@ function handle(m){
       setStatus(capturing ? "capturing" : "capture stopped", capturing);
       break;
   }
+}
+
+function onPools(pools){
+  warm = pools;
+  const parts = []; let err = null, limit = false;
+  for(const [model, st] of Object.entries(pools)){
+    if(st.error){ err = st.error; limit = limit || st.limit_hit; parts.push(model+": down"); }
+    else if(st.ready) parts.push(`${model} warm${st.turns ? " ("+st.turns+")" : ""}`);
+    else parts.push(model+": starting");
+  }
+  if(!capturing) return;
+  if(limit) setStatus("SUBSCRIPTION LIMIT REACHED — " + err.slice(0,70), "err");
+  else if(err) setStatus("model down — " + err.slice(0,70), "err");
+  else setStatus("capturing · " + parts.join(", "), true);
 }
 
 function onAnswer(m){

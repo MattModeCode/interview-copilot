@@ -2,8 +2,12 @@
 
 Live assistant for a **disclosed, open-book** technical interview. It listens to
 the call's incoming audio, keeps a rolling transcript, and on one keypress asks
-Claude and Gemini — in parallel — to find the most recent real question in the
-last 90 seconds and answer it in a form you can read out loud.
+two models — in parallel — to find the most recent real question in the last 90
+seconds and answer it in a form you can read out loud.
+
+**No API keys.** Both panes drive the `claude` CLI headlessly using your existing
+subscription login. Sonnet answers fast, Opus answers deeper; where they disagree,
+the question is contested and worth hedging on out loud.
 
 It does not crop audio or try to detect question boundaries in the signal. The
 whole transcript window goes to the model and the model does the filtering.
@@ -27,8 +31,8 @@ Teams (or any call)
                                                     └─ whisper-server (large-v3-turbo, warm)
                                                          └─ rolling transcript
                                                               └─ [⌃⇧Space]
-                                                                   ├─ Claude  ─┐
-                                                                   └─ Gemini  ─┴─ two panes
+                                                                   ├─ claude CLI (sonnet) ─┐
+                                                                   └─ claude CLI (opus)   ─┴─ two panes
 ```
 
 Only the **remote** side of the call reaches BlackHole — your own microphone
@@ -46,10 +50,14 @@ Multi-Output Device → tick **BlackHole 2ch** and your speakers/headphones).
 Full walkthrough with the gotchas: [docs/audio-setup.md](docs/audio-setup.md).
 
 ```bash
-cp .env.example .env    # add ANTHROPIC_API_KEY and GEMINI_API_KEY
+cp .env.example .env    # defaults work as-is; no keys needed
 ./scripts/preflight.sh  # must be all-green before the call
 ./scripts/start.sh      # http://127.0.0.1:8477
 ```
+
+You need to be logged in to Claude Code already (`claude` on its own, once).
+`preflight.sh` proves it by running a real turn, which is also the only way to
+detect that your subscription is out of quota.
 
 ## Using it
 
@@ -81,30 +89,80 @@ is there because the follow-up is usually the part that actually decides it.
 
 ## Latency
 
-Measured on this machine, warm:
+A cold `claude -p` costs ~5s of startup, which is unusable here. Two things fix
+it. First, flags: `--strict-mcp-config`, `--setting-sources ''`, `--restricted`,
+and a replaced system prompt skip MCP servers, settings, plugins and CLAUDE.md
+discovery — 4.98s → 2.43s. Second, and the real win, the process is never
+restarted: `--input-format stream-json` holds one session open for the whole
+interview, so startup is paid once when you click Start capture.
+
+Measured on this machine, consecutive turns on a live session:
 
 | Stage | Time |
 |---|---|
 | Speech → transcript | ~3s chunk + 0.3s transcription |
-| Gemini 2.5 Flash → first token | **815ms** |
-| Gemini → complete answer | ~1.9s |
-| Claude via API | comparable (needs `ANTHROPIC_API_KEY`) |
-| Claude via CLI fallback | ~8.6s — too slow, get a key |
+| Boot + warmup, per model | ~2.4s, paid **once** |
+| Sonnet → first token | **630–970ms** |
+| Opus → first token | **1090–1370ms** |
+| Either → complete answer | 3–5s (you read the LEAD as it streams) |
 
-Gemini's thinking budget is set to 0 deliberately; with it on, first token took
-5.3s and the answers were no better for this format.
+Latency stays flat as the session accumulates turns — the prompt cache is warm
+and the transcript is the only thing growing.
+
+## Quota
+
+This burns your Claude subscription's session allowance, and **it will run out
+if you are careless** — it did during development, mid-benchmark:
+
+```
+You've hit your session limit · resets 1:50pm
+```
+
+Both panes are the same account, so a limit takes out the whole tool at once.
+What the design does about it:
+
+- One persistent session per model, not a process per answer. An earlier
+  version spawned a fresh process per trigger and paid an extra warmup round
+  trip every time — roughly double the quota for worse latency.
+- `RECYCLE_AFTER` (default 8) is the only other thing that costs a spare turn.
+  Don't lower it.
+- `preflight.sh` runs a real turn, so an exhausted limit shows up *before* the
+  call rather than on your first question.
+- If it does happen live, the status bar says `SUBSCRIPTION LIMIT REACHED` with
+  the reset time rather than failing silently.
+
+Don't leave capture running through practice sessions you don't need, and run
+preflight on the same day as the interview, not the night before.
+
+## Why not Gemini
+
+The original plan was Claude and Gemini side by side. Google discontinued the
+Gemini CLI's free OAuth tier for individuals mid-2026 — it now errors with
+`IneligibleTierError` and points at Antigravity, whose CLI has no headless
+mode. Forcing API-key auth got past that and then failed on quota routing.
+
+So a pane can still be set to `gemini`, but it needs `GEMINI_API_KEY` and the
+SDK path. Set `PANE_B=gemini` in `.env` if you want it — it measured 815ms to
+first token with `thinking_budget=0` (5.3s with thinking on, for no benefit on
+this short a format).
 
 ## Configuration
 
-Everything is in `.env` — `WINDOW_SECONDS` (default 90) is the main dial. Raise
-it for long multi-part questions, lower it if the interviewer rambles and the
-model keeps latching onto stale context.
+Everything is in `.env`.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `WINDOW_SECONDS` | 90 | How far back the trigger looks. Raise for long multi-part questions, lower if the interviewer rambles and the model latches onto stale context. |
+| `PANE_A` / `PANE_B` | `claude:sonnet` / `claude:opus` | `claude:<alias>` for the keyless CLI path, or `gemini` for the SDK path. |
+| `RECYCLE_AFTER` | 8 | Turns before a session is replaced, so old answers stop anchoring new ones. Costs one warmup turn each time. |
+| `CHUNK_SECONDS` | 3 | Transcription slice. Smaller means less tail lag and more word-splitting at boundaries. |
 
 ## Tests
 
 ```bash
-./.venv/bin/python scripts/test_filter.py   # does it ignore small talk?
-./.venv/bin/python scripts/e2e.py           # full pipeline, real audio
+./.venv/bin/python scripts/test_filter.py sonnet   # does it ignore small talk?
+./.venv/bin/python scripts/test_filter.py opus
+./.venv/bin/python scripts/e2e.py                  # full pipeline, real audio
 ```
 
 `test_filter.py` is the one that matters. It feeds realistic noisy transcripts —

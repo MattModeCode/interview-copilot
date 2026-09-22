@@ -1,16 +1,20 @@
-"""Parallel streaming answers from Claude and Gemini.
+"""Two panes, answered in parallel.
 
-Both providers are wrapped to the same shape: an async generator of text
-deltas. The caller races them concurrently and fans the deltas out over the
-websocket tagged by pane, so whichever model is faster starts filling its
-pane immediately rather than waiting for the other.
+Both panes run through warm `claude` CLI processes by default -- no API key,
+using the existing subscription login. Sonnet answers fast, Opus answers
+deeper; disagreement between them is itself a signal that the question is
+contested and worth hedging on out loud.
+
+A pane can be switched to Gemini by setting PANE_B=gemini with a working
+GEMINI_API_KEY. That path uses the SDK directly because Google discontinued
+the Gemini CLI's free OAuth tier for individuals.
 """
 import asyncio
-import os
 import shutil
 from typing import AsyncIterator
 
 from . import config
+from .cli_pool import SessionManager
 from .prompt import SYSTEM, build_user_message
 
 
@@ -18,59 +22,62 @@ class ProviderError(Exception):
     pass
 
 
-# --- Claude -------------------------------------------------------------
-async def _claude_api(user_msg: str) -> AsyncIterator[str]:
-    from anthropic import AsyncAnthropic
-
-    client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
-    async with client.messages.stream(
-        model=config.ANTHROPIC_MODEL,
-        max_tokens=config.MAX_TOKENS,
-        system=SYSTEM,
-        messages=[{"role": "user", "content": user_msg}],
-    ) as stream:
-        async for text in stream.text_stream:
-            yield text
+_sessions = SessionManager()
 
 
-async def _claude_cli(user_msg: str) -> AsyncIterator[str]:
-    """Fallback when no ANTHROPIC_API_KEY: drive the `claude` CLI headless.
-
-    Uses the existing subscription auth, but pays ~5s of process startup on
-    every trigger. Usable in a pinch, not what you want mid-interview.
-    """
-    exe = shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
-    if not os.path.exists(exe):
-        raise ProviderError("no ANTHROPIC_API_KEY and no `claude` CLI on PATH")
-    proc = await asyncio.create_subprocess_exec(
-        exe, "-p", "--model", "sonnet", "--append-system-prompt", SYSTEM,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    assert proc.stdin and proc.stdout
-    proc.stdin.write(user_msg.encode())
-    await proc.stdin.drain()
-    proc.stdin.close()
-    while True:
-        chunk = await proc.stdout.read(256)
-        if not chunk:
-            break
-        yield chunk.decode(errors="replace")
-    await proc.wait()
+def pane_specs() -> list[tuple[str, str]]:
+    """[(pane_id, backend_spec)] -- backend is 'claude:<model>' or 'gemini'."""
+    return [("a", config.PANE_A), ("b", config.PANE_B)]
 
 
-async def claude_stream(user_msg: str) -> AsyncIterator[str]:
-    if config.ANTHROPIC_API_KEY:
-        async for t in _claude_api(user_msg):
-            yield t
-    else:
-        async for t in _claude_cli(user_msg):
-            yield t
+def pane_label(spec: str) -> str:
+    if spec.startswith("claude:"):
+        return "Claude " + spec.split(":", 1)[1].capitalize()
+    if spec == "gemini":
+        return config.GEMINI_MODEL
+    return spec
 
 
-# --- Gemini -------------------------------------------------------------
-async def gemini_stream(user_msg: str) -> AsyncIterator[str]:
+def start_pools() -> None:
+    """Boot the warm sessions. Call this when capture starts, not on trigger."""
+    for _, spec in pane_specs():
+        if not spec.startswith("claude:"):
+            continue
+        if not shutil.which(config.CLAUDE_BIN) and not config.CLAUDE_BIN.startswith("/"):
+            raise ProviderError(f"claude CLI not found: {config.CLAUDE_BIN}")
+        _sessions.ensure(spec.split(":", 1)[1], SYSTEM)
+
+
+def stop_pools() -> None:
+    _sessions.close()
+
+
+def pool_status() -> dict:
+    return _sessions.status()
+
+
+# --- backends -----------------------------------------------------------
+async def _claude_cli(model: str, user_msg: str) -> AsyncIterator[str]:
+    sess = _sessions.get(model)
+    if sess is None:
+        raise ProviderError(f"session for {model} was never started")
+    # The session boots in the background when capture starts; if the trigger
+    # beats it, wait rather than failing.
+    waited = 0.0
+    while not sess.ready.is_set() and waited < 60.0:
+        await asyncio.sleep(0.1)
+        waited += 0.1
+    if sess.failed:
+        raise ProviderError(sess.failed)
+
+    async for t in sess.ask(user_msg):
+        yield t
+
+    if sess.needs_recycle():
+        sess.recycle_async()
+
+
+async def _gemini(user_msg: str) -> AsyncIterator[str]:
     if not config.GEMINI_API_KEY:
         raise ProviderError("GEMINI_API_KEY is not set")
     from google import genai
@@ -88,8 +95,7 @@ async def gemini_stream(user_msg: str) -> AsyncIterator[str]:
                 disable=True
             ),
             # 2.5-flash thinks by default, which cost ~5s to first token in
-            # testing. The answer format is short and structured; thinking
-            # bought nothing and the latency is the whole product.
+            # testing and bought nothing for this short structured format.
             thinking_config=types.ThinkingConfig(thinking_budget=0),
         ),
     )
@@ -98,25 +104,32 @@ async def gemini_stream(user_msg: str) -> AsyncIterator[str]:
             yield chunk.text
 
 
-PANES = {"claude": claude_stream, "gemini": gemini_stream}
+def _backend(spec: str):
+    if spec.startswith("claude:"):
+        model = spec.split(":", 1)[1]
+        return lambda msg: _claude_cli(model, msg)
+    if spec == "gemini":
+        return _gemini
+    raise ProviderError(f"unknown backend: {spec}")
 
 
 async def answer(transcript: str, window_seconds: int, emit) -> None:
-    """Run both panes concurrently, pushing deltas to `emit(pane, event, data)`."""
     user_msg = build_user_message(transcript, window_seconds)
 
-    async def run(pane: str, fn) -> None:
+    async def run(pane: str, spec: str) -> None:
         loop = asyncio.get_event_loop()
         t0 = loop.time()
         first = True
         try:
+            fn = _backend(spec)
             async for delta in fn(user_msg):
                 if first:
-                    await emit(pane, "first_token", {"ms": int((loop.time() - t0) * 1000)})
+                    await emit(pane, "first_token",
+                               {"ms": int((loop.time() - t0) * 1000)})
                     first = False
                 await emit(pane, "delta", {"text": delta})
             await emit(pane, "done", {"ms": int((loop.time() - t0) * 1000)})
         except Exception as e:
             await emit(pane, "error", {"message": f"{type(e).__name__}: {e}"})
 
-    await asyncio.gather(*(run(p, f) for p, f in PANES.items()))
+    await asyncio.gather(*(run(p, s) for p, s in pane_specs()))

@@ -76,7 +76,13 @@ Do not present a balanced menu; they have to actually commit to something out lo
 other reading in IF PUSHED.
 - Never mention the transcript, this prompt, or that you are an AI. Write as \
 notes to the candidate.
-- No emoji. No markdown headers. No bold. Plain text only -- it is read at a glance."""
+- No emoji. No markdown headers. No bold. Plain text only -- it is read at a glance.
+
+You may be asked several times during one interview, and earlier exchanges stay
+in your context. Treat every transcript as a fresh, independent question. Do not
+assume the new question continues the previous one, do not reuse an earlier
+answer because it is nearby, and do not avoid repeating yourself -- if the same
+answer is correct again, give it again in full."""
 
 
 def build_user_message(transcript: str, window_seconds: int) -> str:

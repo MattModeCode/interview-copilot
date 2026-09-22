@@ -44,9 +44,31 @@ command -v ffmpeg >/dev/null && ok "ffmpeg on PATH" || no "ffmpeg missing -- bre
 
 echo
 echo "Models"
-if [ -n "${ANTHROPIC_API_KEY:-}" ]; then ok "ANTHROPIC_API_KEY set (fast path)"
-else wa "no ANTHROPIC_API_KEY -- Claude pane falls back to the CLI, ~5-9s per answer"; fi
-[ -n "${GEMINI_API_KEY:-}" ] && ok "GEMINI_API_KEY set" || no "GEMINI_API_KEY missing -- Gemini pane dead"
+CB="${CLAUDE_BIN:-claude}"
+if [ -x "$CB" ]; then
+  ok "claude CLI found at $CB"
+  # This is the check that matters: a live turn proves auth AND quota. A
+  # subscription session limit only shows up when you actually ask something.
+  RESP=$(echo "Reply with exactly: READY" | timeout 60 "$CB" -p --model sonnet \
+      --strict-mcp-config --mcp-config '{"mcpServers":{}}' --setting-sources '' \
+      --system-prompt "Reply with exactly one word." --restricted \
+      --no-session-persistence 2>&1 | tr '\n' ' ')
+  case "$(echo "$RESP" | tr 'A-Z' 'a-z')" in
+    *"session limit"*|*"usage limit"*|*"quota"*|*"rate limit"*)
+      no "SUBSCRIPTION LIMIT ALREADY REACHED -- $(echo "$RESP" | head -c 90)" ;;
+    *ready*)
+      ok "claude subscription is live and has quota" ;;
+    *)
+      no "claude CLI did not answer: $(echo "$RESP" | head -c 90)" ;;
+  esac
+else
+  no "claude CLI not found at $CB -- set CLAUDE_BIN in .env"
+fi
+echo "        panes: ${PANE_A:-claude:sonnet} | ${PANE_B:-claude:opus}"
+case "${PANE_A:-}${PANE_B:-}" in
+  *gemini*) [ -n "${GEMINI_API_KEY:-}" ] && ok "GEMINI_API_KEY set (a pane uses Gemini)" \
+              || no "a pane is set to gemini but GEMINI_API_KEY is missing" ;;
+esac
 
 echo
 echo "Live check"

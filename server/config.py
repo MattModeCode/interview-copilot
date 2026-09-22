@@ -46,8 +46,15 @@ WINDOW_SECONDS = _int("WINDOW_SECONDS", 90)
 TRANSCRIPT_MAX_SECONDS = _int("TRANSCRIPT_MAX_SECONDS", 3600)
 
 # --- models ---
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
+# Each pane is "claude:<alias>" (warm CLI, no API key) or "gemini" (SDK, needs
+# a key -- Google killed the Gemini CLI's free OAuth tier for individuals).
+PANE_A = os.environ.get("PANE_A", "claude:sonnet")
+PANE_B = os.environ.get("PANE_B", "claude:opus")
+CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
+# Answers stay in the session context, so recycle it periodically to stop
+# earlier answers anchoring later ones. Recycling happens in the background
+# between questions and costs one warmup turn each time -- don't set it low.
+RECYCLE_AFTER = _int("RECYCLE_AFTER", 8)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 MAX_TOKENS = _int("MAX_TOKENS", 1200)

@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from . import config
 from .capture import Capture
-from .models import answer
+from .models import answer, pane_label, pane_specs, pool_status, start_pools, stop_pools
 from .transcript import Transcript
 
 UI = Path(__file__).resolve().parent.parent / "ui"
@@ -125,9 +125,20 @@ async def _startup() -> None:
         threading.Thread(target=_start_hotkey, daemon=True).start()
 
 
+async def _watch_pools() -> None:
+    """Report warm-session readiness to the UI until every session is up."""
+    for _ in range(200):
+        st = pool_status()
+        await broadcast({"type": "pools", "pools": st})
+        if st and all(v["ready"] or v["error"] for v in st.values()):
+            return
+        await asyncio.sleep(1.0)
+
+
 @app.on_event("shutdown")
 async def _shutdown() -> None:
     capture.stop()
+    stop_pools()
 
 
 @app.get("/")
@@ -142,8 +153,8 @@ async def health() -> JSONResponse:
             "capturing": capture.running,
             "capture_error": capture.error,
             "segments": len(transcript.all_segments()),
-            "claude": "api" if config.ANTHROPIC_API_KEY else "cli-fallback (slow)",
-            "gemini": "ready" if config.GEMINI_API_KEY else "NO KEY",
+            "panes": {p: pane_label(spec) for p, spec in pane_specs()},
+            "pools": pool_status(),
             "window_seconds": config.WINDOW_SECONDS,
             "audio_device": config.AUDIO_DEVICE,
         }
@@ -169,8 +180,8 @@ async def ws(websocket: WebSocket) -> None:
                 "config": {
                     "window": config.WINDOW_SECONDS,
                     "chunk": config.CHUNK_SECONDS,
-                    "claude_mode": "api" if config.ANTHROPIC_API_KEY else "cli",
-                    "gemini_ready": bool(config.GEMINI_API_KEY),
+                    "panes": {p: pane_label(spec) for p, spec in pane_specs()},
+                    "recycle_after": config.RECYCLE_AFTER,
                 },
             }
         )
@@ -184,11 +195,15 @@ async def ws(websocket: WebSocket) -> None:
             elif kind == "start":
                 try:
                     await asyncio.to_thread(capture.start)
+                    # Boot the warm model processes now, not on first trigger.
+                    await asyncio.to_thread(start_pools)
                     await broadcast({"type": "status", "capturing": True})
+                    asyncio.create_task(_watch_pools())
                 except Exception as e:
                     await broadcast({"type": "status", "capturing": False, "error": str(e)})
             elif kind == "stop":
                 await asyncio.to_thread(capture.stop)
+                await asyncio.to_thread(stop_pools)
                 await broadcast({"type": "status", "capturing": False})
             elif kind == "clear":
                 transcript.clear()
