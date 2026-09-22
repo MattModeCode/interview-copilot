@@ -8,12 +8,17 @@ it in a form you can read out loud.
 **No API key.** Drives the `claude` CLI headlessly using your existing
 subscription login.
 
-A second pane was tried and dropped. Gemini CLI's free OAuth tier for
-individuals is discontinued by Google. The Antigravity CLI was checked too —
-every headless flag (`-p`, `--print`, `--prompt`, `--headless`, `--cli`)
-returns silently; the binary is a thin launcher for the IDE app (`#!/usr/bin/env
-node \ require('../')`), not an agent with a CLI mode. Both would need a
-workaround, which wasn't wanted, so this is Sonnet alone.
+**Each answer clears the transcript.** The moment an answer finishes
+streaming, the rolling buffer empties. The next trigger only sees speech said
+since that point — nothing lingers to anchor a later, unrelated question. If
+you want to re-answer without new speech, that's what `Clear` does NOT do —
+clearing is now automatic and continuous, one clean window per question.
+
+A second pane (Haiku, then Gemini, then the Antigravity CLI) was tried and
+dropped each time — this ships as Sonnet alone. Antigravity in particular has
+no headless mode at all: every flag (`-p`, `--print`, `--prompt`, `--headless`,
+`--cli`) returns silently, and the binary is a thin launcher for the IDE app
+(`#!/usr/bin/env node \ require('../')`), not an agent.
 
 It does not crop audio or try to detect question boundaries in the signal. The
 whole transcript window goes to the model and the model does the filtering.
@@ -150,6 +155,19 @@ Three options were checked for a second pane, in order:
    for the IDE app, not an agent.
 3. Both would need a key or a workaround that wasn't wanted, so the answer is
    Sonnet alone rather than Sonnet paired with something worse.
+
+## Auto-clear
+
+The transcript buffer wipes itself right after each answer finishes — not on
+a timer, on the `answer_end` event. This means the window the NEXT trigger
+sees starts from zero, built only from what's said after the last question
+was answered. It stops two failure modes: an old, already-answered question
+lingering in the window and getting re-answered by accident, and small talk
+between questions padding out the window the model has to search through.
+
+The manual `Clear` button still exists for wiping mid-question (e.g. the
+interviewer restarts a question) — auto-clear only fires after a completed
+answer, never mid-stream.
 
 ## Domain briefing (do this before a specific interview)
 

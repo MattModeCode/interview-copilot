@@ -64,11 +64,9 @@ if [ -x "$CB" ]; then
 else
   no "claude CLI not found at $CB -- set CLAUDE_BIN in .env"
 fi
-echo "        panes: ${PANE_A:-claude:sonnet} | ${PANE_B:-claude:haiku}"
-case "${PANE_A:-}${PANE_B:-}" in
-  *gemini*) [ -n "${GEMINI_API_KEY:-}" ] && ok "GEMINI_API_KEY set (a pane uses Gemini)" \
-              || no "a pane is set to gemini but GEMINI_API_KEY is missing" ;;
-esac
+echo "        model: ${CLAUDE_MODEL:-sonnet}"
+if [ -f domain.md ]; then ok "domain.md present ($(wc -l < domain.md | tr -d ' ') lines)"
+else wa "no domain.md -- running with no interview-specific vocabulary context"; fi
 
 echo
 echo "Live check"

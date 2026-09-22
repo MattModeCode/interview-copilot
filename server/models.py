@@ -1,18 +1,17 @@
-"""Two panes, answered in parallel.
+"""Single pane: a warm `claude` CLI session, no API key.
 
-Both panes run through warm `claude` CLI processes by default -- no API key,
-using the existing subscription login. Sonnet is the primary read: stronger
-reasoning on system design and behavioural questions, worth the extra ~1s.
-Haiku is the fast second opinion -- useful on questions with one clean
-factual answer (complexity, a definition, "what's the difference between X
-and Y"), where its answer usually agrees with Sonnet's and confirms it, and
-occasionally catches something Sonnet phrased worse under the same time
-pressure. Real disagreement between them is itself worth noticing: it means
-the question is more contested than it first looked.
+Sonnet only. A Haiku second pane was tried and dropped again by request --
+Sonnet's judgment on which sentence in a noisy transcript is actually "the
+question" was the thing worth trusting most, and running two panes doubled
+the subscription-quota burn for a signal (Haiku agreeing or disagreeing)
+that wasn't worth that cost.
 
-A pane can be switched to Gemini by setting PANE_B=gemini with a working
-GEMINI_API_KEY. That path uses the SDK directly because Google discontinued
-the Gemini CLI's free OAuth tier for individuals.
+Gemini stays available as a manual override if you ever want a genuinely
+different model's opinion: set CLAUDE_MODEL is irrelevant then, instead the
+_gemini backend below is wired but unused by default -- kept because Google
+discontinued the Gemini CLI's free OAuth tier for individuals, so this SDK
+path is the only way to reach Gemini here at all, and ripping it out would
+mean re-deriving it from scratch if it's ever wanted again.
 """
 import asyncio
 import shutil
@@ -30,27 +29,11 @@ class ProviderError(Exception):
 _sessions = SessionManager()
 
 
-def pane_specs() -> list[tuple[str, str]]:
-    """[(pane_id, backend_spec)] -- backend is 'claude:<model>' or 'gemini'."""
-    return [("a", config.PANE_A), ("b", config.PANE_B)]
-
-
-def pane_label(spec: str) -> str:
-    if spec.startswith("claude:"):
-        return "Claude " + spec.split(":", 1)[1].capitalize()
-    if spec == "gemini":
-        return config.GEMINI_MODEL
-    return spec
-
-
 def start_pools() -> None:
-    """Boot the warm sessions. Call this when capture starts, not on trigger."""
-    for _, spec in pane_specs():
-        if not spec.startswith("claude:"):
-            continue
-        if not shutil.which(config.CLAUDE_BIN) and not config.CLAUDE_BIN.startswith("/"):
-            raise ProviderError(f"claude CLI not found: {config.CLAUDE_BIN}")
-        _sessions.ensure(spec.split(":", 1)[1], SYSTEM)
+    """Boot the warm session. Call this when capture starts, not on trigger."""
+    if not shutil.which(config.CLAUDE_BIN) and not config.CLAUDE_BIN.startswith("/"):
+        raise ProviderError(f"claude CLI not found: {config.CLAUDE_BIN}")
+    _sessions.ensure(config.CLAUDE_MODEL, SYSTEM)
 
 
 def stop_pools() -> None:
@@ -83,6 +66,9 @@ async def _claude_cli(model: str, user_msg: str) -> AsyncIterator[str]:
 
 
 async def _gemini(user_msg: str) -> AsyncIterator[str]:
+    """Unused by default. Wired for the day a second, genuinely different
+    model's opinion is wanted again -- set GEMINI_API_KEY and call this
+    directly rather than through answer(), which is single-pane now."""
     if not config.GEMINI_API_KEY:
         raise ProviderError("GEMINI_API_KEY is not set")
     from google import genai
@@ -99,8 +85,6 @@ async def _gemini(user_msg: str) -> AsyncIterator[str]:
             automatic_function_calling=types.AutomaticFunctionCallingConfig(
                 disable=True
             ),
-            # 2.5-flash thinks by default, which cost ~5s to first token in
-            # testing and bought nothing for this short structured format.
             thinking_config=types.ThinkingConfig(thinking_budget=0),
         ),
     )
@@ -109,32 +93,17 @@ async def _gemini(user_msg: str) -> AsyncIterator[str]:
             yield chunk.text
 
 
-def _backend(spec: str):
-    if spec.startswith("claude:"):
-        model = spec.split(":", 1)[1]
-        return lambda msg: _claude_cli(model, msg)
-    if spec == "gemini":
-        return _gemini
-    raise ProviderError(f"unknown backend: {spec}")
-
-
 async def answer(transcript: str, window_seconds: int, emit) -> None:
     user_msg = build_user_message(transcript, window_seconds)
-
-    async def run(pane: str, spec: str) -> None:
-        loop = asyncio.get_event_loop()
-        t0 = loop.time()
-        first = True
-        try:
-            fn = _backend(spec)
-            async for delta in fn(user_msg):
-                if first:
-                    await emit(pane, "first_token",
-                               {"ms": int((loop.time() - t0) * 1000)})
-                    first = False
-                await emit(pane, "delta", {"text": delta})
-            await emit(pane, "done", {"ms": int((loop.time() - t0) * 1000)})
-        except Exception as e:
-            await emit(pane, "error", {"message": f"{type(e).__name__}: {e}"})
-
-    await asyncio.gather(*(run(p, s) for p, s in pane_specs()))
+    loop = asyncio.get_event_loop()
+    t0 = loop.time()
+    first = True
+    try:
+        async for delta in _claude_cli(config.CLAUDE_MODEL, user_msg):
+            if first:
+                await emit("a", "first_token", {"ms": int((loop.time() - t0) * 1000)})
+                first = False
+            await emit("a", "delta", {"text": delta})
+        await emit("a", "done", {"ms": int((loop.time() - t0) * 1000)})
+    except Exception as e:
+        await emit("a", "error", {"message": f"{type(e).__name__}: {e}"})

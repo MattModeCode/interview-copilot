@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from . import config
 from .capture import Capture
-from .models import answer, pane_label, pane_specs, pool_status, start_pools, stop_pools
+from .models import answer, pool_status, start_pools, stop_pools
 from .transcript import Transcript
 
 UI = Path(__file__).resolve().parent.parent / "ui"
@@ -78,6 +78,13 @@ async def do_trigger(window: int | None = None) -> None:
 
     async def run() -> None:
         await answer(text, w, emit)
+        # Auto-clear: each answer is a complete read on its own window, and
+        # leftover text just risks the NEXT question latching onto stale
+        # context (small talk, a resolved question) instead of what's
+        # actually being asked now. Clearing after every answer means each
+        # trigger starts from a clean slate of only what's been said since.
+        transcript.clear()
+        await broadcast({"type": "cleared"})
         await broadcast({"type": "answer_end"})
 
     _answer_task = asyncio.create_task(run())
@@ -153,8 +160,8 @@ async def health() -> JSONResponse:
             "capturing": capture.running,
             "capture_error": capture.error,
             "segments": len(transcript.all_segments()),
-            "panes": {p: pane_label(spec) for p, spec in pane_specs()},
-            "pools": pool_status(),
+            "model": config.CLAUDE_MODEL,
+            "pool": pool_status(),
             "window_seconds": config.WINDOW_SECONDS,
             "audio_device": config.AUDIO_DEVICE,
         }
@@ -180,7 +187,7 @@ async def ws(websocket: WebSocket) -> None:
                 "config": {
                     "window": config.WINDOW_SECONDS,
                     "chunk": config.CHUNK_SECONDS,
-                    "panes": {p: pane_label(spec) for p, spec in pane_specs()},
+                    "model": config.CLAUDE_MODEL,
                     "recycle_after": config.RECYCLE_AFTER,
                 },
             }

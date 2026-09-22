@@ -66,11 +66,10 @@ DOMAIN_CONTEXT = _load_domain()
 WINDOW_SECONDS = _int("WINDOW_SECONDS", 90)
 TRANSCRIPT_MAX_SECONDS = _int("TRANSCRIPT_MAX_SECONDS", 3600)
 
-# --- models ---
-# Each pane is "claude:<alias>" (warm CLI, no API key) or "gemini" (SDK, needs
-# a key -- Google killed the Gemini CLI's free OAuth tier for individuals).
-PANE_A = os.environ.get("PANE_A", "claude:sonnet")
-PANE_B = os.environ.get("PANE_B", "claude:haiku")
+# --- model ---
+# One pane, no API key: a warm `claude` CLI session on the existing
+# subscription login.
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "sonnet")
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 # Answers stay in the session context, so recycle it periodically to stop
 # earlier answers anchoring later ones. Recycling happens in the background
