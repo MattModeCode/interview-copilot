@@ -38,8 +38,9 @@ to. Don't.
 Teams (or any call)
   └─ system output = Multi-Output Device ─┬─ your speakers   (you hear it)
                                           └─ BlackHole 2ch   (we capture it)
-                                               └─ ffmpeg, 3s chunks
-                                                    └─ whisper-server (large-v3-turbo, warm)
+                                               └─ ffmpeg, continuous PCM
+                                                    └─ cut at pauses (server/vad.py)
+                                                         └─ faster-whisper, in process
                                                          └─ rolling transcript
                                                               └─ [⌃⇧Space]
                                                                         └─ claude CLI (sonnet)
@@ -52,7 +53,7 @@ exactly what you want.
 ## Setup
 
 ```bash
-brew install blackhole-2ch whisper-cpp ffmpeg switchaudio-osx
+brew install blackhole-2ch ffmpeg switchaudio-osx
 ```
 
 Then build a Multi-Output Device once (Audio MIDI Setup → + → Create
@@ -60,6 +61,7 @@ Multi-Output Device → tick **BlackHole 2ch** and your speakers/headphones).
 Full walkthrough with the gotchas: [docs/audio-setup.md](docs/audio-setup.md).
 
 ```bash
+./.venv/bin/pip install -r requirements.txt
 cp .env.example .env    # defaults work as-is; no keys needed
 ./scripts/preflight.sh  # must be all-green before the call
 ./scripts/start.sh      # http://127.0.0.1:8477
@@ -110,7 +112,7 @@ Measured on this machine, consecutive turns on a live session:
 
 | Stage | Time |
 |---|---|
-| Speech → transcript | ~3s chunk + 0.3s transcription |
+| Speech → transcript | pause (0.6s) + decode (~0.3x realtime) |
 | Boot + warmup, per model | ~2.4s, paid **once** |
 | Sonnet → first token | **630–970ms** |
 | Either → complete answer | 3–5s (you read the LEAD as it streams) |
@@ -179,11 +181,16 @@ even looks for the question.
 
 This exists because whisper mishears domain vocabulary as the nearest
 ordinary English word: "rate equation" comes back as "race equation",
-"anode/cathode" as "an ode/cathoad". Without a domain brief the model has no
-way to know "race equation" doesn't belong in the sentence; with one, it
-resolves it silently and answers the real question. Verified in
-`scripts/test_filter.py` — a synthetic "race equation" transcript is answered
-as a rate-law question on both models.
+"anode/cathode" as "an ode/cathoad".
+
+The brief is used **twice**. Its jargon — anything bolded, backticked,
+capitalised, or written as a glossary entry — is extracted into the decoder's
+`initial_prompt`, so Whisper is primed to hear the term correctly in the first
+place. The full brief still goes to the answering model, which resolves
+whatever slipped through. Prevention first, correction second. Verified in
+`scripts/test_stt.py` (the audio comes back as "rate equation") and
+`scripts/test_filter.py` (a transcript that says "race equation" is still
+answered as a rate-law question).
 
 The example checked in is filled out for a ChemE Car interview (chemical
 engineering + electronics: reaction kinetics, electrode reactions, control
@@ -202,14 +209,39 @@ Everything is in `.env`.
 | `WINDOW_SECONDS` | 90 | How far back the trigger looks. Raise for long multi-part questions, lower if the interviewer rambles and the model latches onto stale context. |
 | `CLAUDE_MODEL` | `sonnet` | Model alias passed to the CLI. |
 | `RECYCLE_AFTER` | 8 | Turns before a session is replaced, so old answers stop anchoring new ones. Costs one warmup turn each time. |
-| `CHUNK_SECONDS` | 3 | Transcription slice. Smaller means less tail lag and more word-splitting at boundaries. |
+| `STT_MODEL` | `large-v3-turbo` | faster-whisper model id. `medium.en` or `small.en` if the machine is busy; expect more homophone errors. |
+| `STT_COMPUTE` | `int8` | CTranslate2 quantisation. `int8_float32` is slightly more accurate and slower. |
+| `SILENCE_HOLD_MS` | 600 | Pause that ends an utterance. Lower means less tail lag and more mid-sentence cuts. |
+| `SEGMENT_MAX_SECONDS` | 14 | Soft cap for a speaker who never pauses. The cut is placed in a real gap, or deferred up to `SEGMENT_GRACE_SECONDS`. |
+| `VAD_MARGIN` | 2.6 | How far above the adaptive noise floor counts as speech. Raise on a noisy line. |
 
 ## Tests
 
 ```bash
+./.venv/bin/python scripts/make_fixtures.py        # build the STT fixture set
+./.venv/bin/python scripts/test_stt.py             # endpointing, filtering, decode
+./.venv/bin/python scripts/wer.py                  # word error rate on the fixtures
 ./.venv/bin/python scripts/test_filter.py sonnet   # does it ignore small talk?
 ./.venv/bin/python scripts/e2e.py                  # full pipeline, real audio
 ```
+
+`wer.py` is the accuracy gate. It scores the fixtures against their known
+references and reports deletions separately, because a mangled word is a
+nuisance and a word that never arrives is a question answered wrong.
+
+| Backend | WER | words dropped |
+|---|---|---|
+| whisper.cpp, 3s timer cuts (before) | 5.3% | 3 |
+| faster-whisper, cut at pauses (after) | **0.9%** | **0** |
+
+Measured on 228 reference words of synthetic speech at 0.32x realtime. The
+fixtures are `say`-generated and therefore cleaner than a real call — treat the
+gap between the two rows as the signal, not the absolute numbers. The alignment
+breaks cost ties in favour of a deletion over two substitutions, so the dropped
+column errs high; that bias works against the after row, not for it. The three
+dropped words were all boundary kills: `rate limit[er]`, `whether the
+[reaction] is`, `the rate equation [you] are using`, plus `requests per
+second` decoded as `requests per session. Second`.
 
 `test_filter.py` is the one that matters. It feeds realistic noisy transcripts —
 weekend chat, screen-share logistics, the candidate's own questions, a follow-up

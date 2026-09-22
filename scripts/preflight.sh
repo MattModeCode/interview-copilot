@@ -37,10 +37,23 @@ fi
 
 echo
 echo "Transcription"
-[ -f "${WHISPER_MODEL:-models/ggml-large-v3-turbo.bin}" ] \
-  && ok "whisper model present" || no "whisper model missing: ${WHISPER_MODEL}"
-command -v whisper-server >/dev/null && ok "whisper-server on PATH" || no "whisper-server missing -- brew install whisper-cpp"
 command -v ffmpeg >/dev/null && ok "ffmpeg on PATH" || no "ffmpeg missing -- brew install ffmpeg"
+if ./.venv/bin/python -c "import faster_whisper" 2>/dev/null; then
+  ok "faster-whisper importable"
+else
+  no "faster-whisper missing -- ./.venv/bin/pip install -r requirements.txt"
+fi
+# The model downloads on first use, and first use must not be the interview.
+MODEL="${STT_MODEL:-large-v3-turbo}"
+CACHE="${STT_CACHE:-$HOME/.cache/huggingface/hub}"
+# huggingface_hub names cache dirs models--<org>--<name>, so org/repo ids take
+# a DOUBLE dash. A single-dash substitution silently never matches.
+SLUG=$(echo "$MODEL" | sed 's#/#--#g')
+if ls -d "$CACHE"/*"$SLUG"* >/dev/null 2>&1; then
+  ok "STT model '$MODEL' is already downloaded"
+else
+  wa "STT model '$MODEL' is not in the cache yet -- first start will download it (~1.5GB)"
+fi
 
 echo
 echo "Models"
