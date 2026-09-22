@@ -8,6 +8,10 @@ websockets
 # VAD), av and numpy. No whisper.cpp, no separate server process.
 faster-whisper>=1.1
 
-# Answering path: the claude CLI is driven as a subprocess, so no SDK is
-# required. pynput is the global hotkey.
+# Answering path. BACKEND=api uses this SDK; BACKEND=cli drives the `claude`
+# binary as a subprocess and needs nothing extra. The SDK is installed either
+# way -- it is small, and the default backend is api.
+anthropic>=0.40
+
+# The system-wide hotkey.
 pynput

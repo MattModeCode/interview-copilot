@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    # Lint and compile only. The real tests need macOS audio hardware
+    # (BlackHole, avfoundation) and make paid model calls, so they run
+    # locally -- see CONTRIBUTING.md. A green CI here does not mean the
+    # audio path works; only ./scripts/preflight.sh proves that.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile every source file
+        run: python -m compileall -q server scripts
+
+      - name: Lint
+        run: |
+          pipx install ruff
+          ruff check server scripts
+
+      - name: Shell syntax
+        run: |
+          for f in scripts/*.sh bin/interview-copilot "Interview Copilot.command"; do
+            bash -n "$f"
+          done
+
+      - name: No secrets, no home paths, no local config
+        run: |
+          fail=0
+          if grep -rInE 'sk-ant-[A-Za-z0-9_-]{8}|AIza[A-Za-z0-9_-]{20}' \
+               --exclude-dir=.git . ; then
+            echo "::error::a live-looking API key is in the tree"; fail=1
+          fi
+          if grep -rIn '/Users/' --exclude-dir=.git --exclude=ci.yml . ; then
+            echo "::error::an absolute home path is in the tree"; fail=1
+          fi
+          for p in .env domain.md; do
+            if git ls-files --error-unmatch "$p" >/dev/null 2>&1; then
+              echo "::error::$p is tracked and must not be"; fail=1
+            fi
+          done
+          if git ls-files | grep -qE '\.pyc$|^\.claude/|^fixtures/'; then
+            echo "::error::local-only files are tracked"; fail=1
+          fi
+          exit $fail

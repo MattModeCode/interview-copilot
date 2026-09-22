@@ -2,35 +2,30 @@
 
 Live assistant for a **disclosed, open-book** technical interview. It listens to
 the call's incoming audio, keeps a rolling transcript, and on one keypress asks
-Sonnet to find the most recent real question in the last 90 seconds and answer
+Claude to find the most recent real question in the last 90 seconds and answer
 it in a form you can read out loud.
 
-**No API key.** Drives the `claude` CLI headlessly using your existing
-subscription login.
+**macOS only.** Capture needs `avfoundation` and a
+[BlackHole](https://github.com/ExistentialAudio/BlackHole) loopback device.
+Everything above the capture layer is portable; that part is not.
 
-**Each answer clears the transcript.** The moment an answer finishes
-streaming, the rolling buffer empties. The next trigger only sees speech said
-since that point — nothing lingers to anchor a later, unrelated question. If
-you want to re-answer without new speech, that's what `Clear` does NOT do —
-clearing is now automatic and continuous, one clean window per question.
+## Disclosure — read this first
 
-A second pane (Haiku, then Gemini, then the Antigravity CLI) was tried and
-dropped each time — this ships as Sonnet alone. Antigravity in particular has
-no headless mode at all: every flag (`-p`, `--print`, `--prompt`, `--headless`,
-`--cli`) returns silently, and the binary is a thin launcher for the IDE app
-(`#!/usr/bin/env node \ require('../')`), not an agent.
+This is built for interviews where **you have told the interviewer you are
+using AI assistance**, or where the format is explicitly open-book. Nothing in
+it is hidden, disguised, or designed to evade notice, and it is not going to
+be: an assessment made without knowing this was running is an assessment of
+someone who does not exist.
 
-It does not crop audio or try to detect question boundaries in the signal. The
-whole transcript window goes to the model and the model does the filtering.
-That is the design: speech-to-text is unreliable at boundaries, language models
-are not, so the messy job is given to the thing that is good at messy jobs.
+If you are considering using it covertly, don't — and don't file issues asking
+for features that would help. That is the one kind of change that will be
+declined without discussion.
 
-## Disclosure
+## Each answer clears the transcript
 
-This is built for interviews where you have told the interviewer you are using
-AI assistance, or where the format is explicitly open-book. Using it covertly
-means the interviewer's assessment of you is wrong in a way they did not agree
-to. Don't.
+The moment an answer finishes streaming, the rolling buffer empties. The next
+trigger only sees speech said since that point — nothing lingers to anchor a
+later, unrelated question.
 
 ## How it works
 
@@ -43,12 +38,32 @@ Teams (or any call)
                                                          └─ faster-whisper, in process
                                                          └─ rolling transcript
                                                               └─ [⌃⇧Space]
-                                                                        └─ claude CLI (sonnet)
+                                                                        └─ Claude (api key, or a warm CLI session)
 ```
 
 Only the **remote** side of the call reaches BlackHole — your own microphone
 doesn't loop back — so the transcript is mostly the interviewer, which is
 exactly what you want.
+
+## Two backends
+
+The answering call goes through one of two paths. Same prompt, same streaming,
+same behaviour — pick one in `.env`.
+
+| `BACKEND` | Needs | Costs | Use it if |
+|---|---|---|---|
+| `api` (default) | `ANTHROPIC_API_KEY` | per-token billing | You just want this to work. Anyone can use it. |
+| `cli` | the `claude` CLI, installed and logged in | your Claude subscription's session allowance, no money | You already have the CLI and would rather spend quota than cash. |
+
+`api` has no process to boot, so it pays no startup at all, and the system
+prompt is sent as a cached block — after the first turn of an interview the
+whole rubric is a cache read. `cli` gets to the same place differently, by
+holding one process open for the entire interview (see
+[Latency](#latency)). Neither one pays startup per question, which is the
+only thing that actually matters here.
+
+Each turn on `api` is an independent request, so there is no conversation for
+an old answer to anchor a new one to, and `RECYCLE_AFTER` does not apply.
 
 ## Setup
 
@@ -61,19 +76,42 @@ Multi-Output Device → tick **BlackHole 2ch** and your speakers/headphones).
 Full walkthrough with the gotchas: [docs/audio-setup.md](docs/audio-setup.md).
 
 ```bash
-./.venv/bin/pip install -r requirements.txt
-cp .env.example .env    # defaults work as-is; no keys needed
-./scripts/preflight.sh  # must be all-green before the call
-./scripts/start.sh      # http://127.0.0.1:8477
+git clone https://github.com/MattModeCode/interview-copilot.git
+cd interview-copilot
+./bin/interview-copilot
 ```
 
-You need to be logged in to Claude Code already (`claude` on its own, once).
-`preflight.sh` proves it by running a real turn, which is also the only way to
-detect that your subscription is out of quota.
+That is the whole thing. On first run it creates `.venv`, installs the
+dependencies, copies `.env.example` to `.env`, starts the server, and opens
+`http://127.0.0.1:8477` in your browser once it is actually serving. On macOS
+you can double-click **Interview Copilot.command** in Finder instead.
+
+It will stop and tell you what to fix if `ffmpeg` or BlackHole is missing, or
+if `BACKEND=api` and you have not put a key in `.env`:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-...     # from console.anthropic.com/settings/keys
+```
+
+Then, before a real interview:
+
+```bash
+./scripts/preflight.sh    # must be all-green. Makes one live model call.
+```
+
+Preflight is the only thing that proves the backend actually answers — a valid
+key with no credit, or a subscription that is out of quota for the day, looks
+fine until you ask it something. Run it on the day, not the night before. The
+STT model (~1.5GB) also downloads on first use, and first use must not be the
+interview.
+
+`scripts/start.sh` is still there for a warm machine: no setup, no browser,
+just the server.
 
 ## Using it
 
 1. Run `./scripts/preflight.sh`. If it isn't green, fix it before the call.
+   Then `./bin/interview-copilot` (or double-click the `.command`).
 2. Set your system output **and** the Teams speaker to *Multi-Output Device*.
 3. Open http://127.0.0.1:8477 on a second monitor. Click **Start capture**.
 4. When you get a question, hit **⌃⇧Space** (works system-wide, you don't need
@@ -101,6 +139,11 @@ is there because the follow-up is usually the part that actually decides it.
 
 ## Latency
 
+On `BACKEND=api` there is no startup to remove: the request goes straight out
+and the cached system prefix keeps time-to-first-token low from the second
+turn onward. The rest of this section is about how the `cli` backend gets to
+the same place, because that took work.
+
 A cold `claude -p` costs ~5s of startup, which is unusable here. Two things fix
 it. First, flags: `--strict-mcp-config`, `--setting-sources ''`, `--restricted`,
 and a replaced system prompt skip MCP servers, settings, plugins and CLAUDE.md
@@ -120,10 +163,11 @@ Measured on this machine, consecutive turns on a live session:
 Latency stays flat as the session accumulates turns — the prompt cache is warm
 and the transcript is the only thing growing.
 
-## Quota
+## Quota (`BACKEND=cli`)
 
-This burns your Claude subscription's session allowance, and **it will run out
-if you are careless** — it did during development, mid-benchmark:
+On the CLI backend this burns your Claude subscription's session allowance,
+and **it will run out if you are careless** — it did during development,
+mid-benchmark:
 
 ```
 You've hit your session limit · resets 1:50pm
@@ -206,9 +250,13 @@ Everything is in `.env`.
 
 | Setting | Default | What it does |
 |---|---|---|
+| `BACKEND` | `api` | `api` (Anthropic API key) or `cli` (a warm `claude` CLI session on a subscription login). |
+| `ANTHROPIC_API_KEY` | — | Required for `BACKEND=api`. |
+| `ANTHROPIC_MODEL` | `claude-sonnet-5` | `BACKEND=api` only. |
 | `WINDOW_SECONDS` | 90 | How far back the trigger looks. Raise for long multi-part questions, lower if the interviewer rambles and the model latches onto stale context. |
-| `CLAUDE_MODEL` | `sonnet` | Model alias passed to the CLI. |
-| `RECYCLE_AFTER` | 8 | Turns before a session is replaced, so old answers stop anchoring new ones. Costs one warmup turn each time. |
+| `CLAUDE_MODEL` | `sonnet` | `BACKEND=cli` only. Model alias passed to the CLI. |
+| `CLAUDE_BIN` | from `PATH` | `BACKEND=cli` only. Set this only if `claude` is somewhere your shell cannot see. |
+| `RECYCLE_AFTER` | 8 | `BACKEND=cli` only. Turns before a session is replaced, so old answers stop anchoring new ones. Costs one warmup turn each time. |
 | `STT_MODEL` | `large-v3-turbo` | faster-whisper model id. `medium.en` or `small.en` if the machine is busy; expect more homophone errors. |
 | `STT_COMPUTE` | `int8` | CTranslate2 quantisation. `int8_float32` is slightly more accurate and slower. |
 | `SILENCE_HOLD_MS` | 600 | Pause that ends an utterance. Lower means less tail lag and more mid-sentence cuts. |
@@ -221,7 +269,7 @@ Everything is in `.env`.
 ./.venv/bin/python scripts/make_fixtures.py        # build the STT fixture set
 ./.venv/bin/python scripts/test_stt.py             # endpointing, filtering, decode
 ./.venv/bin/python scripts/wer.py                  # word error rate on the fixtures
-./.venv/bin/python scripts/test_filter.py sonnet   # does it ignore small talk?
+./.venv/bin/python scripts/test_filter.py           # does it ignore small talk?
 ./.venv/bin/python scripts/e2e.py                  # full pipeline, real audio
 ```
 
@@ -246,3 +294,12 @@ second` decoded as `requests per session. Second`.
 `test_filter.py` is the one that matters. It feeds realistic noisy transcripts —
 weekend chat, screen-share logistics, the candidate's own questions, a follow-up
 probe that must beat the original question — and asserts which one gets answered.
+
+## Contributing, security, licence
+
+[CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md) ·
+[MIT](LICENSE)
+
+Report anything security-related as a private advisory, not a public issue.
+And do not put a real transcript or a real `domain.md` in an issue — both
+describe a specific interview and a specific person.
