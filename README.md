@@ -151,6 +151,30 @@ Three options were checked for a second pane, in order:
 3. Both would need a key or a workaround that wasn't wanted, so the answer is
    Sonnet alone rather than Sonnet paired with something worse.
 
+## Domain briefing (do this before a specific interview)
+
+Copy `domain.md.example` to `domain.md` (gitignored) and edit it for the
+actual interview: the subject matter, the vocabulary in scope, and — this is
+the part that matters — the specific technical terms most likely to get
+mangled by speech-to-text, so the model can silently correct them before it
+even looks for the question.
+
+This exists because whisper mishears domain vocabulary as the nearest
+ordinary English word: "rate equation" comes back as "race equation",
+"anode/cathode" as "an ode/cathoad". Without a domain brief the model has no
+way to know "race equation" doesn't belong in the sentence; with one, it
+resolves it silently and answers the real question. Verified in
+`scripts/test_filter.py` — a synthetic "race equation" transcript is answered
+as a rate-law question on both models.
+
+The example checked in is filled out for a ChemE Car interview (chemical
+engineering + electronics: reaction kinetics, electrode reactions, control
+circuits) as a template for the format. Write your own for a different field
+— it's plain text, no schema.
+
+If `domain.md` doesn't exist, the tool runs exactly as before with no domain
+context. This step is optional, not required.
+
 ## Configuration
 
 Everything is in `.env`.

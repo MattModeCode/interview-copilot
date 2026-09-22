@@ -43,6 +43,15 @@ CASES = [
         expect=["hashmap", "in-memory", "in memory"], reject=["how would you store"],
     ),
     dict(
+        name="STT homophone: race equation -> rate equation (ChemE Car domain)",
+        transcript=(
+            "cool yeah nice to meet you too so um for the propulsion reaction "
+            "can you walk me through the race equation you're using and how "
+            "the rate constant depends on temperature"
+        ),
+        expect=["rate", "temperature"], reject=["race car", "racing"],
+    ),
+    dict(
         name="candidate's own question is ignored",
         transcript=(
             "before we start do you mind if I ask what the team size is "

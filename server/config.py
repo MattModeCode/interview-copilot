@@ -39,23 +39,45 @@ WHISPER_MODEL = os.environ.get(
     "WHISPER_MODEL", "models/ggml-large-v3-turbo.bin"
 )
 
+# --- interview domain ---
+# Free text, injected into the system prompt. Tells the model what field
+# this interview is in and which terms are likely to get mis-transcribed --
+# it uses this to silently correct STT homophone errors and to judge which
+# vocabulary is actually in-scope. Lives in domain.md (a real brief needs
+# paragraphs and a glossary, which a one-line .env var can't hold); the
+# DOMAIN_CONTEXT env var overrides it if set, for a quick one-off swap.
+_DOMAIN_FILE = ROOT / "domain.md"
+
+
+def _load_domain() -> str:
+    env = os.environ.get("DOMAIN_CONTEXT", "").strip()
+    if env:
+        return env
+    if _DOMAIN_FILE.exists():
+        return _DOMAIN_FILE.read_text().strip()
+    return ""
+
+
+DOMAIN_CONTEXT = _load_domain()
+
 # --- transcript window ---
 # How far back the answer call looks. 90s comfortably covers a long
 # multi-part question plus the preamble that gives it context.
 WINDOW_SECONDS = _int("WINDOW_SECONDS", 90)
 TRANSCRIPT_MAX_SECONDS = _int("TRANSCRIPT_MAX_SECONDS", 3600)
 
-# --- model ---
-# One pane, no API key: a warm `claude` CLI session on the existing
-# subscription login. A second pane was considered (Gemini CLI, Antigravity
-# CLI) and dropped -- Google discontinued the Gemini CLI's free OAuth tier for
-# individuals, and Antigravity ships no headless mode at all, only the IDE.
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "sonnet")
+# --- models ---
+# Each pane is "claude:<alias>" (warm CLI, no API key) or "gemini" (SDK, needs
+# a key -- Google killed the Gemini CLI's free OAuth tier for individuals).
+PANE_A = os.environ.get("PANE_A", "claude:sonnet")
+PANE_B = os.environ.get("PANE_B", "claude:haiku")
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 # Answers stay in the session context, so recycle it periodically to stop
 # earlier answers anchoring later ones. Recycling happens in the background
 # between questions and costs one warmup turn each time -- don't set it low.
 RECYCLE_AFTER = _int("RECYCLE_AFTER", 8)
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 MAX_TOKENS = _int("MAX_TOKENS", 1200)
 
 # --- server ---

@@ -16,7 +16,7 @@ SCRIPT = [
 async def main():
     async with websockets.connect(URL) as ws:
         hello = json.loads(await ws.recv())
-        print(f"connected. model={hello['config']['model']}")
+        print(f"connected. panes={hello['config']['panes']}")
 
         await ws.send(json.dumps({"type": "clear"}))
         await ws.send(json.dumps({"type": "start"}))
@@ -62,11 +62,11 @@ async def main():
         print("\ntriggering answer...")
         await ws.send(json.dumps({"type": "trigger", "window": 120}))
 
-        out = {"a": ""}
+        out = {"a": "", "b": ""}
         meta = {}
         done = set()
         deadline = time.time() + 90
-        while time.time() < deadline and len(done) < 1:
+        while time.time() < deadline and len(done) < 2:
             try:
                 m = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
             except asyncio.TimeoutError:
@@ -88,7 +88,7 @@ async def main():
         await ws.send(json.dumps({"type": "stop"}))
 
         ok = True
-        for p in ("a",):
+        for p in ("a", "b"):
             text = out[p].strip()
             print(f"\n===== {p.upper()} =====\n{text[:700]}")
             if not text:

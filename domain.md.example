@@ -1,0 +1,51 @@
+This interview is for ChemE Car, a chemical engineering club/team. It builds a
+small shoebox-sized car powered by a chemical reaction (not a battery/motor
+bought off the shelf) that must travel a precise, variable distance set the
+day of competition and then stop -- controlled by chemistry and electronics
+the team designs, not by a fixed program. Expect a mix of chemical
+engineering and electrical engineering questions, sometimes in the same
+breath: reaction kinetics and stoichiometry next to sensors, control
+circuits, and power delivery.
+
+Likely topic areas:
+- Reaction kinetics: rate law, rate equation, reaction order, rate constant
+  (k), Arrhenius equation, activation energy, temperature dependence
+- Thermodynamics: exothermic/endothermic, enthalpy, Gibbs free energy,
+  equilibrium constant, Le Chatelier's principle
+- The propulsion reaction itself: often a chemical battery reaction (e.g. a
+  galvanic/voltaic cell, zinc-copper or similar), or a gas-generating
+  reaction used for a mechanical/pneumatic drive; electrode half-reactions,
+  anode/cathode, oxidation/reduction, electrolyte, cell potential (EMF)
+- Stopping mechanism: often iodine clock reaction or another timed/colorimetric
+  reaction used to trigger a stop, tuned by concentration and temperature
+- Electrical/controls side: circuit design, sensors (photoresistor/LDR,
+  colorimeter, timer circuit), relays or transistors switching the stop
+  mechanism, voltage/current/resistance basics, Ohm's law, RC timing circuits
+- Systems/design thinking: error propagation, how a mis-measured distance
+  translates to a controlled variable, safety (corrosive/toxic reagents,
+  hydrogen or other gas generation), why chemical propulsion over a battery,
+  scaling a bench reaction up to drive an actual car
+- Team/behavioural: design trade-offs made, what failed in testing and why,
+  working across the chem/electrical sub-teams, iteration process
+
+Terms an interview-audio speech-to-text engine is likely to mangle -- if a
+transcribed word is nonsensical in context but one of these makes the
+sentence make sense, use the domain term:
+- "rate equation" / "rate law" heard as "race equation" / "race law"
+- "reaction" heard as "re-action"
+- "cathode" / "anode" heard as "cathoad" / "an ode"
+- "activation energy" heard as "activation energy" split oddly, or "EA"
+  spelled/misheard as a letter sequence
+- "stoichiometry" heard as "stoke eom uh tree" or similarly garbled -- it is
+  a hard word for STT
+- "Arrhenius" heard as a person's name or nonsense syllables
+- "equilibrium" heard as "equal Librium" or similar
+- "electrolyte" heard as "electoral light" or similar
+- "iodine clock" heard as "I owed a nine clock" or similar
+- "colorimeter" / "photoresistor" / "LDR" garbled into unrelated words
+- "PID controller" heard as "pee eye dee" spelled wrong, or "pid" as a word
+- "galvanic" / "voltaic" heard as unrelated words
+- Numbers with units (concentrations in molarity, mL, grams, ohms, volts)
+  are especially error-prone -- if a bullet needs a specific number the
+  candidate said, treat it as unreliable and let the candidate fill it in
+  rather than inventing a number that wasn't really said.
